@@ -12462,6 +12462,21 @@ class Router:
             request_kwargs=request_kwargs,
         )
 
+        # Candidate deployment ids the router resolved for this routed model (routing group /
+        # model_name / team / pattern), before health and cooldown filtering. Consumed by
+        # EncryptedContentAffinityCheck to tell a genuine cross-group route from same-group
+        # unavailability; no single public index reproduces this full resolution.
+        if isinstance(healthy_deployments, list):
+            request_kwargs["_routed_group_candidate_model_ids"] = (
+                frozenset(  # rebind-ok: request-scoped scratch for the encrypted-content affinity pre-call check
+                    str(d["model_info"]["id"])
+                    for d in healthy_deployments
+                    if isinstance(d, dict)
+                    and isinstance(d.get("model_info"), dict)
+                    and d["model_info"].get("id") is not None
+                )
+            )
+
         # IF TEAM ID SPECIFIED ON MODEL, AND REQUEST CONTAINS USER_API_KEY_TEAM_ID, FILTER OUT MODELS THAT ARE NOT IN THE TEAM
         ## THIS PREVENTS WRITING FILES OF OTHER TEAMS TO MODELS THAT ARE TEAM-ONLY MODELS
         healthy_deployments = filter_team_based_models(

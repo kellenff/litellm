@@ -14390,3 +14390,32 @@ async def test_router_max_parallel_requests_slot_released_when_stream_closed_ear
 
     assert tracker.peak == 1
     assert tracker.current == 0
+
+
+@pytest.mark.asyncio
+async def test_async_get_available_deployment_stashes_routed_group_candidate_model_ids():
+    """
+    async_get_available_deployment must publish the deployment ids it resolved for the
+    routed model onto request_kwargs, before health/cooldown filtering, so
+    EncryptedContentAffinityCheck can tell a cross-group route from same-group
+    unavailability without re-deriving the router's resolution. Regression guard for the
+    tier-change discriminator's team/pattern index gaps (LIT-7195).
+    """
+    router = Router(
+        model_list=[
+            {
+                "model_name": "grp",
+                "litellm_params": {"model": "openai/gpt-4o", "api_key": "sk-a", "api_base": "https://x.invalid"},
+                "model_info": {"id": "dep-a"},
+            },
+            {
+                "model_name": "grp",
+                "litellm_params": {"model": "openai/gpt-4o-mini", "api_key": "sk-b", "api_base": "https://x.invalid"},
+                "model_info": {"id": "dep-b"},
+            },
+        ]
+    )
+    request_kwargs: dict = {}
+    await router.async_get_available_deployment(model="grp", request_kwargs=request_kwargs)
+
+    assert request_kwargs["_routed_group_candidate_model_ids"] == frozenset({"dep-a", "dep-b"})

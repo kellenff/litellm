@@ -159,6 +159,8 @@ class TestUpCommand:
         assert captured["settings"]["env"]["ANTHROPIC_AUTH_TOKEN"] == "fixed-master-key"
         assert captured["settings"]["env"]["ENABLE_TOOL_SEARCH"] == "true"
         assert "apiKeyHelper" not in captured["settings"]
+        assert captured["settings"]["model"] == "autorouter"
+        assert captured["settings"]["statusLine"]["command"].endswith("statusline.py")
         assert captured["settings_mode"] == 0o600
 
         assert terminate_calls == [99999]

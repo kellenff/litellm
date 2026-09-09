@@ -1,6 +1,8 @@
 import json
+import pathlib
 import shlex
 import stat
+import sys
 import time
 from unittest.mock import patch
 
@@ -21,9 +23,12 @@ from litellm.proxy.client.cli.commands.claude_settings import (
     SettingsFileOwner,
     StaticToken,
     configure_claude_settings,
+    install_statusline_script,
     merge_claude_settings,
     resolve_api_key_helper,
+    statusline_command,
     unconfigure_claude_settings,
+    with_status_line,
 )
 
 
@@ -388,7 +393,7 @@ class TestMergeClaudeSettings:
 
     def test_a_static_token_lands_in_env_and_the_helper_slot_is_cleared(self):
         settings = {"apiKeyHelper": "/usr/local/bin/lite auth print-token", "env": {"ANTHROPIC_API_KEY": "leaked"}}
-        merged = merge_claude_settings(settings, "http://127.0.0.1:4000/", StaticToken("token-abc"))
+        merged = merge_claude_settings(settings, "http://127.0.0.1:4000/", StaticToken("token-abc"), status_line="statusline-cmd")
         assert merged["env"]["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:4000"
         assert merged["env"]["ANTHROPIC_AUTH_TOKEN"] == "token-abc"
         assert merged["env"]["ENABLE_TOOL_SEARCH"] == "true"
@@ -400,20 +405,20 @@ class TestMergeClaudeSettings:
 
     def test_a_helper_lands_top_level_and_the_static_slots_are_cleared(self):
         settings = {"env": {"ANTHROPIC_AUTH_TOKEN": "sk-old", "ANTHROPIC_API_KEY": "leaked"}}
-        merged = merge_claude_settings(settings, "http://127.0.0.1:4000", ApiKeyHelper("lite auth print-token"))
+        merged = merge_claude_settings(settings, "http://127.0.0.1:4000", ApiKeyHelper("lite auth print-token"), status_line="statusline-cmd")
         assert merged["apiKeyHelper"] == "lite auth print-token"
         assert "ANTHROPIC_AUTH_TOKEN" not in merged["env"] and "ANTHROPIC_API_KEY" not in merged["env"]
 
     def test_keeps_existing_switch_values_and_unrelated_keys_without_mutating_the_input(self):
         settings = {"theme": "dark", "env": {"SOME_OTHER_VAR": "value", "ENABLE_TOOL_SEARCH": "false"}}
-        merged = merge_claude_settings(settings, "http://127.0.0.1:4000", StaticToken("token-abc"))
+        merged = merge_claude_settings(settings, "http://127.0.0.1:4000", StaticToken("token-abc"), status_line="statusline-cmd")
         assert merged["theme"] == "dark"
         assert merged["env"]["SOME_OTHER_VAR"] == "value"
         assert merged["env"]["ENABLE_TOOL_SEARCH"] == "false"
         assert settings == {"theme": "dark", "env": {"SOME_OTHER_VAR": "value", "ENABLE_TOOL_SEARCH": "false"}}
 
     def test_a_default_model_sets_only_the_row_claude_code_starts_on(self):
-        merged = merge_claude_settings({}, "http://127.0.0.1:4000", StaticToken("token-abc"), default_model="claude-auto")
+        merged = merge_claude_settings({}, "http://127.0.0.1:4000", StaticToken("token-abc"), default_model="claude-auto", status_line="statusline-cmd")
         assert merged["model"] == "claude-auto"
         assert not any(key in merged["env"] for key in ANTHROPIC_DEFAULT_MODEL_ENV_KEYS)
 
@@ -421,7 +426,7 @@ class TestMergeClaudeSettings:
         # Router's auto-router registry is keyed by the literal requested model string with no
         # wildcard resolution, so `lite autoroute up` overrides the env var each tier reads.
         settings = {"env": {"ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-opus-4-8"}}
-        merged = merge_claude_settings(settings, "http://127.0.0.1:4000", StaticToken("token-abc"), tier_model="autorouter")
+        merged = merge_claude_settings(settings, "http://127.0.0.1:4000", StaticToken("token-abc"), tier_model="autorouter", status_line="statusline-cmd")
         assert {merged["env"][key] for key in ANTHROPIC_DEFAULT_MODEL_ENV_KEYS} == {"autorouter"}
         assert "model" not in merged
 
@@ -436,7 +441,7 @@ class TestMergeClaudeSettings:
             "model": "old-model",
         }
         for credential in (StaticToken("token-abc"), ApiKeyHelper("helper")):
-            merged = merge_claude_settings(settings, "http://127.0.0.1:4000", credential, default_model="claude-auto")
+            merged = merge_claude_settings(settings, "http://127.0.0.1:4000", credential, default_model="claude-auto", status_line="statusline-cmd")
             changed_top_level = {key for key in set(settings) | set(merged) if settings.get(key) != merged.get(key)}
             assert changed_top_level - {"env"} <= set(OWNED_TOP_LEVEL_KEYS)
             changed_env = {
@@ -603,3 +608,85 @@ class TestConfigureAndUnconfigure:
         settings_path, _ = paths
         with pytest.raises(ClaudeSettingsError, match="nothing to undo"):
             unconfigure_claude_settings(settings_path, state_path, ())
+
+
+class TestStatusLine:
+    """The merge registers the status line, and only while the slot is empty or already ours."""
+
+    COMMAND = "/opt/lite/bin/python /Users/me/.litellm/statusline.py"
+
+    @pytest.fixture
+    def state_path(self, tmp_path):
+        return tmp_path / "state" / "claude_configure_state.json"
+
+    def test_an_empty_slot_gets_our_status_line(self):
+        assert with_status_line({}, self.COMMAND)["statusLine"] == {"type": "command", "command": self.COMMAND}
+
+    def test_a_users_own_status_line_is_never_replaced(self):
+        theirs = {"type": "command", "command": "~/.claude/my-statusline.sh"}
+        assert with_status_line({"statusLine": theirs}, self.COMMAND)["statusLine"] == theirs
+
+    def test_ours_under_an_older_interpreter_is_refreshed(self):
+        stale = {"type": "command", "command": "/old/python /Users/me/.litellm/statusline.py"}
+        assert with_status_line({"statusLine": stale}, self.COMMAND)["statusLine"]["command"] == self.COMMAND
+
+    def test_both_credential_shapes_carry_it(self):
+        for credential in (StaticToken("tok"), ApiKeyHelper("helper")):
+            merged = merge_claude_settings({}, "http://127.0.0.1:4000", credential, status_line=self.COMMAND)
+            assert merged["statusLine"] == {"type": "command", "command": self.COMMAND}
+
+    def test_the_installed_script_is_the_bundled_one_and_the_command_runs_this_interpreter(self, tmp_path):
+        from litellm.proxy.client.cli.commands import statusline_script
+
+        script = tmp_path / "lite" / "statusline.py"
+        command = install_statusline_script(script)
+        assert script.read_bytes() == pathlib.Path(statusline_script.__file__).read_bytes()
+        assert shlex.split(command) == [sys.executable, str(script)]
+        assert command == statusline_command(script)
+        assert stat.S_IMODE(script.stat().st_mode) == 0o600
+        assert stat.S_IMODE(script.parent.stat().st_mode) == 0o700
+        assert install_statusline_script(script) == command
+
+    def test_configure_installs_it_and_unconfigure_removes_only_ours(self, paths, state_path, tmp_path):
+        settings_path, _ = paths
+        settings_path.parent.mkdir(parents=True)
+        settings_path.write_text(json.dumps({"theme": "dark"}))
+        script = tmp_path / "statusline.py"
+
+        configure_claude_settings(
+            "http://127.0.0.1:4000", StaticToken("tok"), "claude-auto", settings_path, state_path, (), script
+        )
+        configured = json.loads(settings_path.read_text())
+        assert configured["statusLine"]["command"] == statusline_command(script)
+        assert script.exists()
+
+        outcome = unconfigure_claude_settings(settings_path, state_path, ())
+        assert json.loads(settings_path.read_text()) == {"theme": "dark"}
+        assert "statusLine" in outcome.restored
+
+    def test_a_status_line_the_user_replaced_after_configure_survives_unconfigure(self, paths, state_path, tmp_path):
+        settings_path, _ = paths
+        script = tmp_path / "statusline.py"
+        configure_claude_settings("http://127.0.0.1:4000", StaticToken("tok"), None, settings_path, state_path, (), script)
+        theirs = {"type": "command", "command": "~/.claude/my-statusline.sh"}
+        settings_path.write_text(json.dumps({**json.loads(settings_path.read_text()), "statusLine": theirs}))
+
+        outcome = unconfigure_claude_settings(settings_path, state_path, ())
+        assert json.loads(settings_path.read_text())["statusLine"] == theirs
+        assert "statusLine" in outcome.kept
+
+    def test_a_receipt_from_before_the_status_line_existed_still_unconfigures(self, paths, state_path, tmp_path):
+        # Older receipts record fewer owned keys; the new key reads as "not ours" rather than crashing.
+        settings_path, _ = paths
+        script = tmp_path / "statusline.py"
+        configure_claude_settings("http://127.0.0.1:4000", StaticToken("tok"), None, settings_path, state_path, (), script)
+        receipt = json.loads(state_path.read_text())
+        receipt["written_top_level"].pop("statusLine")
+        receipt["previous_top_level"].pop("statusLine")
+        state_path.write_text(json.dumps(receipt))
+
+        outcome = unconfigure_claude_settings(settings_path, state_path, ())
+        restored = json.loads(settings_path.read_text())
+        assert "ANTHROPIC_AUTH_TOKEN" not in restored.get("env", {})
+        assert restored["statusLine"]["command"] == statusline_command(script)
+        assert "statusLine" in outcome.kept

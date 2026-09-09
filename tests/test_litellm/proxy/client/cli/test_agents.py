@@ -1202,3 +1202,29 @@ class TestAgentCommands:
             )
         assert result.exit_code == 0, result.output
         assert captured["reattach_terminal"] is None
+
+
+class TestPrepareCodex:
+    def test_registers_the_installed_script_as_a_session_scoped_stop_hook(self):
+        from litellm.proxy.client.cli.commands.agents import prepare_codex
+
+        args = prepare_codex("http://localhost:4000", "sk-key", {}, install=lambda: "/py /home/me/.litellm/statusline.py")
+        assert args == (
+            "-c",
+            'hooks.Stop=[{hooks=[{type="command",command="/py /home/me/.litellm/statusline.py"}]}]',
+        )
+
+    def test_a_failed_install_is_an_agent_error_not_a_crash(self):
+        from litellm.proxy.client.cli.commands.agents import AgentRunError, prepare_codex
+        from litellm.proxy.client.cli.commands.claude_settings import ClaudeSettingsError
+
+        def boom():
+            raise ClaudeSettingsError("disk full")
+
+        with pytest.raises(AgentRunError, match="disk full"):
+            prepare_codex("http://localhost:4000", "sk-key", {}, install=boom)
+
+    def test_codex_is_wired_through_the_preparer_registry(self):
+        from litellm.proxy.client.cli.commands.agents import _PREPARERS, prepare_codex
+
+        assert _PREPARERS["codex"] is prepare_codex

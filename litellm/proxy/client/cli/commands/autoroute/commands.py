@@ -15,6 +15,7 @@ from ..claude_settings import (
     CLAUDE_SETTINGS_PATH,
     ClaudeSettingsError,
     StaticToken,
+    install_statusline_script,
     load_json_or_empty,
     merge_claude_settings,
 )
@@ -158,7 +159,12 @@ def up(port: int) -> None:
             AUTOROUTE_BACKUP_PATH,
         )
         merged: Final = merge_claude_settings(
-            original_settings, base_url, StaticToken(master_key), tier_model=AUTOROUTER_MODEL_NAME
+            original_settings,
+            base_url,
+            StaticToken(master_key),
+            default_model=AUTOROUTER_MODEL_NAME,
+            tier_model=AUTOROUTER_MODEL_NAME,
+            status_line=install_statusline_script(),
         )
         CLAUDE_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
         with secure_create(CLAUDE_SETTINGS_PATH) as f:

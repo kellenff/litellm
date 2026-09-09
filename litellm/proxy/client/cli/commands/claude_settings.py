@@ -9,6 +9,7 @@ parts live here rather than in any one command module.
 
 import hashlib
 import json
+import os
 import shlex
 import shutil
 import sys
@@ -28,11 +29,13 @@ from litellm.litellm_core_utils.private_json import (
     stage_private_json,
 )
 
+from . import statusline_script
 from .cmd_quoting import quote_for_cmd
 
 ENV_KEY: Final = "env"
 API_KEY_HELPER_KEY: Final = "apiKeyHelper"
 MODEL_KEY: Final = "model"
+STATUS_LINE_KEY: Final = "statusLine"
 ANTHROPIC_BASE_URL_KEY: Final = "ANTHROPIC_BASE_URL"
 ANTHROPIC_AUTH_TOKEN_KEY: Final = "ANTHROPIC_AUTH_TOKEN"
 ANTHROPIC_API_KEY_KEY: Final = "ANTHROPIC_API_KEY"
@@ -53,13 +56,14 @@ OWNED_ENV_KEYS: Final = (
     ANTHROPIC_AUTH_TOKEN_KEY,
     ANTHROPIC_API_KEY_KEY,
 )
-OWNED_TOP_LEVEL_KEYS: Final = (API_KEY_HELPER_KEY, MODEL_KEY)
+OWNED_TOP_LEVEL_KEYS: Final = (API_KEY_HELPER_KEY, MODEL_KEY, STATUS_LINE_KEY)
 _CREDENTIAL_ENV_KEYS: Final = frozenset((ANTHROPIC_API_KEY_KEY, ANTHROPIC_AUTH_TOKEN_KEY))
 
 CLAUDE_SETTINGS_PATH: Final = Path.home() / ".claude" / "settings.json"
 BACKUP_PATH: Final = Path.home() / ".litellm" / "claude_settings_backup.json"
 AUTOROUTE_BACKUP_PATH: Final = Path.home() / ".litellm" / "autorouter" / "claude_settings_backup.json"
 CONFIGURE_STATE_PATH: Final = Path.home() / ".litellm" / "claude_configure_state.json"
+STATUSLINE_SCRIPT_PATH: Final = Path.home() / ".litellm" / "statusline.py"
 
 
 @dataclass(frozen=True, slots=True)
@@ -196,12 +200,61 @@ def _write_settings(settings_path: Path, settings: Mapping[str, JsonValue]) -> N
     commit_staged_json(_stage(target, settings), str(target))
 
 
+def statusline_command(script_path: Path, platform: str = sys.platform) -> str:
+    """The shell command Claude Code and Codex run for the status line: this interpreter, that script.
+
+    The interpreter running `lite` is the one the apiKeyHelper already depends on, so the two
+    stand or fall together; a bare `python3` could resolve to an interpreter with no `lite` at all.
+    """
+    quote: Final = quote_for_cmd if platform.startswith("win") else shlex.quote
+    return " ".join(quote(token) for token in (sys.executable, str(script_path)))
+
+
+def install_statusline_script(script_path: Path | None = None) -> str:
+    """Copy the bundled status line script into place and return the command that runs it.
+
+    The script is the stdlib-only module beside this one, copied verbatim so Claude Code and
+    Codex can run it without the litellm package being importable from their shell. It lands
+    owner-only in the owner-only ~/.litellm, since both agents execute whatever is at that path.
+    """
+    target: Final = script_path or STATUSLINE_SCRIPT_PATH
+    try:
+        ensure_private_dir(target.parent)
+        descriptor: Final = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(Path(statusline_script.__file__).read_bytes())
+    except OSError as e:
+        raise ClaudeSettingsError(f"Could not install the status line script at {target}: {e}") from e
+    return statusline_command(target)
+
+
+def with_status_line(settings: Mapping[str, JsonValue], command: str) -> Mapping[str, JsonValue]:
+    """Register `command` as Claude Code's status line unless the user runs one of their own.
+
+    Ours is recognised by the script it runs, so a re-install under a different interpreter still
+    counts as ours, while a user's status line is never replaced.
+    """
+    existing: Final = settings.get(STATUS_LINE_KEY)
+    existing_command: Final = existing.get("command") if isinstance(existing, dict) else None
+    ours: Final = existing is None or (isinstance(existing_command, str) and command.split()[-1] in existing_command)
+    if not ours:
+        return settings
+    entry: Final = dict(  # mutable-ok: JSON document handed to json.dump, which rejects a read-only mapping
+        (("type", "command"), ("command", command))
+    )
+    return dict(  # mutable-ok: JSON document handed to json.dump, which rejects a read-only mapping
+        chain(settings.items(), ((STATUS_LINE_KEY, entry),))
+    )
+
+
 def merge_claude_settings(
     settings: Mapping[str, JsonValue],
     base_url: str,
     credential: ClaudeCredential,
     default_model: str | None = None,
     tier_model: str | None = None,
+    *,
+    status_line: str,
 ) -> Mapping[str, JsonValue]:
     """Return a new settings mapping wired to route Claude Code through the proxy.
 
@@ -219,8 +272,9 @@ def merge_claude_settings(
     "from settings.json"; the /model picker still lists every discovered model. `tier_model`
     is `lite autoroute up`'s knob: it sets every ANTHROPIC_DEFAULT_*_MODEL so Claude Code's own
     /model aliases, sub-agents and background helpers all request that one group instead of
-    Claude Code's built-in ids. Apart from those tier keys, the keys this touches are exactly
-    OWNED_ENV_KEYS and OWNED_TOP_LEVEL_KEYS; every other key is preserved untouched.
+    Claude Code's built-in ids. `status_line` is registered unless the user runs a status line of
+    their own. Apart from those tier keys, the keys this touches are exactly OWNED_ENV_KEYS and
+    OWNED_TOP_LEVEL_KEYS; every other key is preserved untouched.
     """
     raw_env: Final = settings.get(ENV_KEY, {})
     current_env: Final = raw_env if isinstance(raw_env, dict) else {}
@@ -238,7 +292,11 @@ def merge_claude_settings(
     )
     return dict(  # mutable-ok: JSON document handed to json.dump, which rejects a read-only mapping
         chain(
-            ((key, value) for key, value in settings.items() if key not in (API_KEY_HELPER_KEY, ENV_KEY)),
+            (
+                (key, value)
+                for key, value in with_status_line(settings, status_line).items()
+                if key not in (API_KEY_HELPER_KEY, ENV_KEY)
+            ),
             ((ENV_KEY, env),),
             ((API_KEY_HELPER_KEY, credential.command),) if isinstance(credential, ApiKeyHelper) else (),
             ((MODEL_KEY, default_model),) if default_model is not None else (),
@@ -307,6 +365,7 @@ def configure_claude_settings(
     settings_path: Path,
     state_path: Path,
     owners: Sequence[SettingsFileOwner],
+    script_path: Path | None = None,
 ) -> None:
     """Persistently route Claude Code through base_url, recording how to undo it.
 
@@ -319,7 +378,9 @@ def configure_claude_settings(
     _refuse_while_owned(settings_path, owners)
     existing: Final = load_json_or_empty(settings_path)
     previous_env: Final = _env_object(existing, settings_path)
-    merged: Final = merge_claude_settings(existing, base_url, credential, model)
+    merged: Final = merge_claude_settings(
+        existing, base_url, credential, model, status_line=install_statusline_script(script_path)
+    )
     earlier: Final = read_configure_receipt(state_path)
     receipt: Final = ConfigureReceipt(
         file_existed=earlier.file_existed if earlier is not None else settings_path.exists(),
@@ -353,12 +414,16 @@ def _restored(
     previous: Mapping[str, OwnedValue],
     written: Mapping[str, str],
 ) -> tuple[Mapping[str, JsonValue], tuple[str, ...], tuple[str, ...]]:
-    """Put back every owned key that still holds what configure wrote; leave the rest alone."""
-    ours: Final = frozenset(key for key in keys if _fingerprint(_owned(current, key)) == written[key])
+    """Put back every owned key that still holds what configure wrote; leave the rest alone.
+
+    A key the receipt never recorded (one this CLI started owning after that configure ran) is
+    not ours to touch, so the owned-key table can grow without stranding earlier receipts.
+    """
+    ours: Final = frozenset(key for key in keys if _fingerprint(_owned(current, key)) == written.get(key))
     restored: Final = dict(  # mutable-ok: JSON document handed to json.dump, which rejects a read-only mapping
         chain(
             ((key, value) for key, value in current.items() if key not in ours),
-            ((key, previous[key].value) for key in keys if key in ours and previous[key].present),
+            ((key, previous[key].value) for key in keys if key in ours and key in previous and previous[key].present),
         )
     )
     return restored, tuple(key for key in keys if key in ours), tuple(key for key in keys if key not in ours)
@@ -426,6 +491,8 @@ __all__ = (
     "OWNED_ENV_KEYS",
     "OWNED_TOP_LEVEL_KEYS",
     "SETTINGS_FILE_OWNERS",
+    "STATUSLINE_SCRIPT_PATH",
+    "STATUS_LINE_KEY",
     "ApiKeyHelper",
     "ClaudeCredential",
     "ClaudeSettingsError",

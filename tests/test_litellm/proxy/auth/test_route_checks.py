@@ -3638,3 +3638,33 @@ def test_agent_registry_route_gate_open_to_non_admin_roles(user_role, method, ro
         valid_token=valid_token,
         request_data={},
     )
+
+
+@pytest.mark.parametrize("user_role", [None, LitellmUserRoles.INTERNAL_USER.value, LitellmUserRoles.INTERNAL_USER_VIEW_ONLY.value])
+def test_auto_router_session_is_reachable_by_any_key_but_benchmarks_stays_admin_only(user_role):
+    """A coding agent's status line calls /auto_router/session with whatever virtual key the agent
+    itself uses, usually one with no user role at all; the handler then scopes the row to that key's
+    own hash. self_managed_routes is the only role-agnostic list, so this is the entry that lets the
+    call through. The admin-wide sibling /auto_router/benchmarks must stay behind the same gate it
+    always had, which proves the new entry is the narrow one."""
+    valid_token = UserAPIKeyAuth(api_key="hash-of-caller", user_role=user_role)
+    request = MagicMock(spec=Request)
+    request.query_params = {"session_id": "sess-1"}
+
+    RouteChecks.non_proxy_admin_allowed_routes_check(
+        user_obj=None,
+        _user_role=user_role,
+        route="/auto_router/session",
+        request=request,
+        valid_token=valid_token,
+        request_data={},
+    )
+    with pytest.raises(Exception, match="Only proxy admin"):
+        RouteChecks.non_proxy_admin_allowed_routes_check(
+            user_obj=None,
+            _user_role=user_role,
+            route="/auto_router/benchmarks",
+            request=request,
+            valid_token=valid_token,
+            request_data={},
+        )

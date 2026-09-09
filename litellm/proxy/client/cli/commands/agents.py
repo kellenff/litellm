@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 import subprocess
@@ -12,6 +13,7 @@ import requests
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from .auth import CliContextObj, context_secret_vault, get_stored_api_key, login
+from .claude_settings import ClaudeSettingsError, install_statusline_script
 from .cmd_quoting import quote_for_cmd
 from .pi import (
     LITELLM_PROXY_API_KEY_ENV,
@@ -175,10 +177,32 @@ def prepare_pi(
     return ("--model", f"{PI_PROVIDER_NAME}/{ids[0]}")
 
 
+def prepare_codex(
+    base_url: str,
+    api_key: str,
+    base_env: Mapping[str, str],
+    *,
+    install: Callable[[], str] = install_statusline_script,
+) -> tuple[str, ...]:
+    """Register the Stop hook that reports the routed model and session cost after each turn.
+
+    Codex has no status line, so a Stop hook's systemMessage is where the auto-router's routed
+    model and savings can show. The hook rides in as a session flag rather than a config.toml
+    edit, so it lives exactly as long as this launch; Codex asks once to trust it and keys that
+    trust on the command, which is stable across launches. The script reads OPENAI_BASE_URL
+    and OPENAI_API_KEY, which build_agent_env already exports for Codex.
+    """
+    try:
+        command: Final = install()
+    except ClaudeSettingsError as e:
+        raise AgentRunError(str(e)) from e
+    return ("-c", f'hooks.Stop=[{{hooks=[{{type="command",command={json.dumps(command)}}}]}}]')
+
+
 _Preparer: TypeAlias = Callable[[str, str, Mapping[str, str]], Sequence[str]]
 
 _PREPARERS: Final[Mapping[str, _Preparer]] = MappingProxyType(
-    {"pi": prepare_pi}  # mutable-ok: MappingProxyType freezes the provider registry
+    {"pi": prepare_pi, "codex": prepare_codex}  # mutable-ok: MappingProxyType freezes the provider registry
 )
 
 
@@ -588,6 +612,7 @@ __all__ = [
     "build_agent_env",
     "opencode_model_sync_env",
     "opencode_provider_config",
+    "prepare_codex",
     "prepare_pi",
     "resolve_api_key",
     "run_agent",

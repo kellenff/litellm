@@ -261,6 +261,30 @@ describe("autoRouterRows actor gating", () => {
     expect(row.canDelete).toBe(true);
   });
 
+  // Rows are auto-routers by construction, so the member permission reaches them: the
+  // server admits a granted member's PATCH and DELETE on the team's own routers only.
+  it("gives a granted member the same affordances a team admin gets, on their team's routers", () => {
+    const MEMBER = { userRole: "Internal User", userID: "u-member", isViewOnly: false };
+    const grantedTeams = [
+      {
+        team_id: "team-1",
+        members_with_roles: [{ user_id: "u-member", user_email: "m@t", role: "user" }],
+        team_member_permissions: ["/model/auto_router_management"],
+      },
+    ] as never;
+    const rowFor = (teamId: string | null) =>
+      toAutoRouterRow(
+        { ...complexityDeployment, model_info: { id: "cid-1", db_model: true, team_id: teamId } },
+        0,
+        MEMBER,
+        grantedTeams,
+      );
+    expect(rowFor("team-1").canEdit).toBe(true);
+    expect(rowFor("team-1").canDelete).toBe(true);
+    expect(rowFor("other-team").canDelete).toBe(false);
+    expect(rowFor(null).canDelete).toBe(false);
+  });
+
   // A proxy_admin_viewer session reads "Admin" through the masquerade, but PATCH and
   // DELETE both 403 it, so its rows must not offer the affordances.
   it("hides write affordances from a view-only admin session", () => {

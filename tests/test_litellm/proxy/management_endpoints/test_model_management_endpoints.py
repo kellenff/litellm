@@ -7,6 +7,7 @@ from typing import Dict, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from litellm._uuid import uuid
@@ -47,10 +48,12 @@ class MockPrismaClient:
         team_exists: bool = True,
         user_admin: bool = True,
         sibling_deployments: list = None,
+        team_member_permissions: list = None,
     ):
         self.team_exists = team_exists
         self.user_admin = user_admin
         self.sibling_deployments = sibling_deployments or []
+        self.team_member_permissions = team_member_permissions
         self.db = self
 
     async def find_unique(self, where):
@@ -63,6 +66,7 @@ class MockPrismaClient:
                         user_id="test_user", role="admin" if self.user_admin else "user"
                     )
                 ],
+                team_member_permissions=self.team_member_permissions,
             )
         return None
 
@@ -175,6 +179,127 @@ class TestModelManagementAuthChecks:
             premium_user=True,
         )
         assert result is True
+
+    @staticmethod
+    def _team_with_member(member_id: str, permissions: list[str] | None) -> LiteLLM_TeamTable:
+        return LiteLLM_TeamTable(
+            team_id="test_team",
+            team_alias="test_team",
+            members_with_roles=[Member(user_id="someone-else", role="admin"), Member(user_id=member_id, role="user")],
+            team_member_permissions=permissions,
+        )
+
+    # The one permission that opens model writes to a non-admin member, and the exact
+    # shape it opens them for: a strategy router, on the member's own team.
+    @pytest.mark.parametrize(
+        "permissions, router_kind, allowed",
+        [
+            (["/model/auto_router_management"], "complexity", True),
+            (["/model/auto_router_management"], "semantic", True),
+            (["/model/auto_router_management"], "adaptive", True),
+            (["/model/auto_router_management"], "quality", True),
+            (["/model/auto_router_management"], None, False),
+            (["/key/generate"], "complexity", False),
+            ([], "complexity", False),
+            (None, "complexity", False),
+        ],
+    )
+    def test_member_with_auto_router_permission_passes_only_for_a_strategy_router(
+        self, permissions, router_kind, allowed
+    ):
+        team_obj = self._team_with_member(self.normal_user.user_id, permissions)
+        if allowed:
+            assert (
+                ModelManagementAuthChecks.can_user_make_team_model_call(
+                    team_id="test_team",
+                    user_api_key_dict=self.normal_user,
+                    team_obj=team_obj,
+                    premium_user=True,
+                    router_kind=router_kind,
+                )
+                is True
+            )
+            return
+        with pytest.raises(HTTPException) as exc_info:
+            ModelManagementAuthChecks.can_user_make_team_model_call(
+                team_id="test_team",
+                user_api_key_dict=self.normal_user,
+                team_obj=team_obj,
+                premium_user=True,
+                router_kind=router_kind,
+            )
+        assert exc_info.value.status_code == 403
+        assert "/model/auto_router_management" in str(exc_info.value.detail)
+
+    def test_auto_router_permission_does_not_reach_a_non_member(self):
+        team_obj = self._team_with_member("a-real-member", ["/model/auto_router_management"])
+        with pytest.raises(HTTPException) as exc_info:
+            ModelManagementAuthChecks.can_user_make_team_model_call(
+                team_id="test_team",
+                user_api_key_dict=self.normal_user,
+                team_obj=team_obj,
+                premium_user=True,
+                router_kind="complexity",
+            )
+        assert exc_info.value.status_code == 403
+
+    def test_auto_router_permission_is_still_premium_gated(self):
+        team_obj = self._team_with_member(self.normal_user.user_id, ["/model/auto_router_management"])
+        with pytest.raises(HTTPException) as exc_info:
+            ModelManagementAuthChecks.can_user_make_team_model_call(
+                team_id="test_team",
+                user_api_key_dict=self.normal_user,
+                team_obj=team_obj,
+                premium_user=False,
+                router_kind="complexity",
+            )
+        assert exc_info.value.status_code == 403
+
+    # The stored deployment decides the kind, so a member cannot turn a regular team model
+    # into a router (or a router into a model) through an update, and encryption at rest
+    # does not hide the discriminator from the check.
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "stored_model, encrypted, allowed",
+        [
+            ("auto_router/complexity_router", False, True),
+            ("auto_router/complexity_router", True, True),
+            ("auto_router/my-semantic", True, True),
+            ("azure/gpt-4o-mini", False, False),
+            ("azure/gpt-4o-mini", True, False),
+        ],
+    )
+    async def test_can_user_make_model_call_classifies_the_stored_deployment(
+        self, monkeypatch, stored_model, encrypted, allowed
+    ):
+        monkeypatch.setenv("LITELLM_SALT_KEY", "sk-1234")
+        model_params = Deployment(
+            model_name="model_name_test_team_abc",
+            litellm_params=LiteLLM_Params(model=encrypt_value_helper(stored_model) if encrypted else stored_model),
+            model_info={"team_id": "test_team"},
+        )
+        prisma_client = MockPrismaClient(
+            team_exists=True, user_admin=False, team_member_permissions=["/model/auto_router_management"]
+        )
+        if allowed:
+            assert (
+                await ModelManagementAuthChecks.can_user_make_model_call(
+                    model_params=model_params,
+                    user_api_key_dict=self.normal_user,
+                    prisma_client=prisma_client,
+                    premium_user=True,
+                )
+                is True
+            )
+            return
+        with pytest.raises(HTTPException) as exc_info:
+            await ModelManagementAuthChecks.can_user_make_model_call(
+                model_params=model_params,
+                user_api_key_dict=self.normal_user,
+                prisma_client=prisma_client,
+                premium_user=True,
+            )
+        assert exc_info.value.status_code == 403
 
     @pytest.mark.asyncio
     async def test_allow_team_model_action_success(self):
@@ -1225,7 +1350,7 @@ class TestTeamModelSiblingRouting:
                     side_effect=mock_add_model_to_db,
                 ),
                 patch(
-                    "litellm.proxy.management_endpoints.model_management_endpoints.team_model_add",
+                    "litellm.proxy.management_endpoints.model_management_endpoints._register_team_models",
                     mock_team_model_add,
                 ),
             ):
@@ -1372,7 +1497,7 @@ class TestTeamModelUpdate:
                 True,
             ),
             patch(
-                "litellm.proxy.management_endpoints.model_management_endpoints.team_model_add"
+                "litellm.proxy.management_endpoints.model_management_endpoints._register_team_models"
             ) as mock_team_model_add,
             patch(
                 "litellm.proxy.management_endpoints.model_management_endpoints.update_team"
@@ -1436,17 +1561,16 @@ class TestTeamModelUpdate:
 
         with (
             patch(
-                "litellm.proxy.management_endpoints.model_management_endpoints.team_model_delete"
+                "litellm.proxy.management_endpoints.model_management_endpoints._unregister_team_models"
             ) as mock_delete,
             patch(
-                "litellm.proxy.management_endpoints.model_management_endpoints.team_model_add"
+                "litellm.proxy.management_endpoints.model_management_endpoints._register_team_models"
             ) as mock_add,
         ):
             await _update_existing_team_model_assignment(
                 team_id="team_123",
                 public_model_name="new-public-name",
                 db_model=db_model,
-                user_api_key_dict=user_api_key_dict,
                 prisma_client=prisma_client,  # type: ignore
             )
 
@@ -1481,17 +1605,16 @@ class TestTeamModelUpdate:
 
         with (
             patch(
-                "litellm.proxy.management_endpoints.model_management_endpoints.team_model_delete"
+                "litellm.proxy.management_endpoints.model_management_endpoints._unregister_team_models"
             ) as mock_delete,
             patch(
-                "litellm.proxy.management_endpoints.model_management_endpoints.team_model_add"
+                "litellm.proxy.management_endpoints.model_management_endpoints._register_team_models"
             ) as mock_add,
         ):
             await _update_existing_team_model_assignment(
                 team_id="team_123",
                 public_model_name="new-public-name",
                 db_model=db_model,
-                user_api_key_dict=user_api_key_dict,
                 prisma_client=None,
             )
 
@@ -1531,7 +1654,7 @@ class TestTeamModelUpdate:
             written.update(update_data)
             return update_data
 
-        async def team_add(**_):
+        async def team_add(*_: object):
             events.append("team_model_add")
 
         with (
@@ -1541,7 +1664,7 @@ class TestTeamModelUpdate:
             ),
             patch("litellm.proxy.proxy_server.premium_user", True),  # test-quality-ok: team models are premium-gated through a proxy global with no injection seam
             patch(  # test-quality-ok: the team list write is the collaborator whose ordering is asserted
-                "litellm.proxy.management_endpoints.model_management_endpoints.team_model_add",
+                "litellm.proxy.management_endpoints.model_management_endpoints._register_team_models",
                 side_effect=team_add,
             ),
         ):
@@ -1606,17 +1729,16 @@ class TestTeamModelUpdate:
 
         with (
             patch(
-                "litellm.proxy.management_endpoints.model_management_endpoints.team_model_delete"
+                "litellm.proxy.management_endpoints.model_management_endpoints._unregister_team_models"
             ) as mock_delete,
             patch(
-                "litellm.proxy.management_endpoints.model_management_endpoints.team_model_add"
+                "litellm.proxy.management_endpoints.model_management_endpoints._register_team_models"
             ) as mock_add,
         ):
             await _update_existing_team_model_assignment(
                 team_id="team_123",
                 public_model_name="new-public-name",
                 db_model=db_model,
-                user_api_key_dict=user_api_key_dict,
                 prisma_client=prisma_client,  # type: ignore
             )
 
@@ -1932,10 +2054,10 @@ class TestTeamModelUpdate:
                 True,
             ),
             patch(
-                "litellm.proxy.management_endpoints.model_management_endpoints.team_model_add"
+                "litellm.proxy.management_endpoints.model_management_endpoints._register_team_models"
             ) as mock_team_model_add,
             patch(
-                "litellm.proxy.management_endpoints.model_management_endpoints.team_model_delete"
+                "litellm.proxy.management_endpoints.model_management_endpoints._unregister_team_models"
             ) as mock_team_model_delete,
         ):
             result = await _update_team_model_in_db(
@@ -4839,7 +4961,7 @@ class TestStrategyRouterWriteValidation:
             yield MagicMock(create=AsyncMock(return_value=created))
             events.append("slot-exit")
 
-        async def team_model_add(**_: object) -> None:
+        async def team_model_add(*_: object) -> None:
             events.append("team_model_add")
 
         deployment = Deployment(
@@ -4853,7 +4975,7 @@ class TestStrategyRouterWriteValidation:
                 lambda value, new_encryption_key=None: value,
             ),
             patch(  # test-quality-ok: the team list write is the collaborator whose ordering is asserted
-                "litellm.proxy.management_endpoints.model_management_endpoints.team_model_add",
+                "litellm.proxy.management_endpoints.model_management_endpoints._register_team_models",
                 side_effect=team_model_add,
             ),
         ):

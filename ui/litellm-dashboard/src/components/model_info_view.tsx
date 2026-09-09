@@ -172,6 +172,7 @@ export default function ModelInfoView({
   const canEditModel = canModifyModel({ userRole, userID, isViewOnly }, teams ?? null, {
     teamId: modelData?.model_info?.team_id,
     isDbModel: modelData?.model_info?.db_model === true,
+    isAutoRouter: isAutoRouterDeployment(modelData?.litellm_params),
   });
   const isAdmin = userRole === "Admin";
   // Editor-aware on purpose: an adaptive or quality router must not offer Edit Auto Router.

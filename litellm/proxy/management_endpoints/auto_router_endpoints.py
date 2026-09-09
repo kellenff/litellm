@@ -200,7 +200,8 @@ async def _authorize_router_dry_run(user_api_key_dict: UserAPIKeyAuth, team_id: 
     """Allow exactly the callers who could create this router.
 
     Both dry runs are gated like the write they rehearse rather than as reads: a proxy
-    admin, or a team admin naming their own team, matching /model/new. Routing a test
+    admin, a team admin naming their own team, or a team member whose team grants
+    auto-router management, matching /model/new for a complexity router. Routing a test
     prompt can also spend money (an `llm` classifier config calls its classifier, a
     semantic config embeds the prompt), so a read-level gate would be too loose anyway.
     """
@@ -244,6 +245,7 @@ async def _authorize_router_dry_run(user_api_key_dict: UserAPIKeyAuth, team_id: 
         user_api_key_dict=user_api_key_dict,
         team_obj=LiteLLM_TeamTable.model_validate(team_row.model_dump()),
         premium_user=premium_user,
+        router_kind="complexity",
     )
 
 

@@ -37,6 +37,7 @@ from litellm.litellm_core_utils.ptu_pricing import (
 from litellm.proxy._types import (
     BlockModelRequest,
     CommonProxyErrors,
+    KeyManagementRoutes,
     LiteLLM_ProxyModelTable,
     LiteLLM_TeamTable,
     LitellmTableNames,
@@ -46,8 +47,6 @@ from litellm.proxy._types import (
     ProxyErrorTypes,
     ProxyException,
     ReconcileOutcome,
-    TeamModelAddRequest,
-    TeamModelDeleteRequest,
     UserAPIKeyAuth,
 )
 from litellm.proxy.auth.litellm_license import AUTO_ROUTER_LICENSE_REMEDY
@@ -62,11 +61,11 @@ from litellm.proxy.common_utils.encrypt_decrypt_utils import (
 )
 from litellm.proxy.common_utils.user_api_key_cache import UserApiKeyCache
 from litellm.proxy.db.routing_prisma_wrapper import WriterPinnedClient
-from litellm.proxy.management_endpoints.common_utils import _is_user_team_admin
+from litellm.proxy.management_endpoints.common_utils import _is_user_team_admin, team_member_has_permission
 from litellm.proxy.management_endpoints.team_endpoints import (
     _refresh_cached_team,
-    team_model_add,
-    team_model_delete,
+    add_models_to_team,
+    remove_models_from_team,
 )
 from litellm.proxy.management_endpoints.team_endpoints import (
     update_team as _legacy_update_team,
@@ -101,8 +100,10 @@ from litellm.router_strategy.complexity_router import (
 from litellm.router_utils.auto_router_model_naming import (
     GATED_AUTO_ROUTER_CAPABILITIES,
     STRATEGY_ROUTER_PARAM_FIELDS,
+    StrategyRouterKind,
     capability_limit_violation,
     carries_complexity_router_settings,
+    classify_strategy_router_model,
     count_capability_routers,
     gated_capability_of,
     is_complexity_router_model,
@@ -337,6 +338,16 @@ def _effective_model(
         return_original_value=True,
     )
     return decrypted if isinstance(decrypted, str) else None
+
+
+def _router_kind_of(litellm_params: GenericLiteLLMParams | None) -> StrategyRouterKind | None:
+    """The strategy a deployment's ``litellm_params.model`` selects, None for a regular model.
+
+    Reads the field as a stored value so a DB row's encrypted model decrypts; a plaintext
+    incoming model passes through the decryptor unchanged.
+    """
+    model: Final = _effective_model(None, litellm_params)
+    return None if model is None else classify_strategy_router_model(model)
 
 
 def _effective_complexity_router_params(
@@ -1237,16 +1248,37 @@ async def _add_team_model_to_db(
     )
 
     if original_model_name:
-        await team_model_add(
-            data=TeamModelAddRequest(
-                team_id=_team_id,
-                models=[original_model_name],
-            ),
-            http_request=Request(scope={"type": "http"}),
-            user_api_key_dict=user_api_key_dict,
-        )
+        await _register_team_models(_team_id, (original_model_name,), prisma_client)
 
     return model_response
+
+
+async def _register_team_models(team_id: str, models: Sequence[str], prisma_client: PrismaClient) -> None:
+    """Register public names on the team after the caller's own auth check on the deployment passed."""
+    from litellm.proxy.proxy_server import proxy_logging_obj, user_api_key_cache
+
+    await add_models_to_team(
+        team_id=team_id,
+        models=models,
+        prisma_client=prisma_client,
+        user_api_key_cache=user_api_key_cache,
+        proxy_logging_obj=proxy_logging_obj,
+    )
+
+
+async def _unregister_team_models(team_id: str, models: Sequence[str], prisma_client: PrismaClient) -> None:
+    from litellm.proxy.proxy_server import proxy_logging_obj, user_api_key_cache
+
+    team_row: Final = await _repo_team_table(prisma_client).find_unique(where={"team_id": team_id})
+    if team_row is None:
+        return
+    await remove_models_from_team(
+        team_obj=LiteLLM_TeamTable.model_validate(team_row.model_dump()),
+        models=models,
+        prisma_client=prisma_client,
+        user_api_key_cache=user_api_key_cache,
+        proxy_logging_obj=proxy_logging_obj,
+    )
 
 
 async def _update_team_model_in_db(
@@ -1324,14 +1356,13 @@ async def _update_team_model_in_db(
         await _setup_new_team_model_assignment(
             team_id=patch_team_id,
             public_model_name=public_model_name,
-            user_api_key_dict=user_api_key_dict,
+            prisma_client=prisma_client,
         )
     else:
         await _update_existing_team_model_assignment(
             team_id=patch_team_id,
             public_model_name=public_model_name,
             db_model=db_model,
-            user_api_key_dict=user_api_key_dict,
             prisma_client=prisma_client,
         )
 
@@ -1387,17 +1418,10 @@ def _get_public_model_name(
 async def _setup_new_team_model_assignment(
     team_id: str,
     public_model_name: str,
-    user_api_key_dict: UserAPIKeyAuth,
+    prisma_client: PrismaClient,
 ) -> None:
     """Register a newly team-assigned model's public name on the team."""
-    await team_model_add(
-        data=TeamModelAddRequest(
-            team_id=team_id,
-            models=[public_model_name],
-        ),
-        http_request=Request(scope={"type": "http"}),
-        user_api_key_dict=user_api_key_dict,
-    )
+    await _register_team_models(team_id, (public_model_name,), prisma_client)
 
 
 async def _get_team_deployments(
@@ -1579,7 +1603,6 @@ async def _update_existing_team_model_assignment(
     team_id: str,
     public_model_name: str,
     db_model: Deployment,
-    user_api_key_dict: UserAPIKeyAuth,
     prisma_client: PrismaClient | None,
 ) -> None:
     """Update an existing team model if the public name changed.
@@ -1617,37 +1640,16 @@ async def _update_existing_team_model_assignment(
         ]
 
         # Add new name first, then delete old name to prevent access loss on partial failure
-        await team_model_add(
-            data=TeamModelAddRequest(
-                team_id=team_id,
-                models=[public_model_name],
-            ),
-            http_request=Request(scope={"type": "http"}),
-            user_api_key_dict=user_api_key_dict,
-        )
+        await _register_team_models(team_id, (public_model_name,), prisma_client)
 
         if not other_deployments_with_old_name:
-            await team_model_delete(
-                data=TeamModelDeleteRequest(
-                    team_id=team_id,
-                    models=[old_public_name],
-                ),
-                http_request=Request(scope={"type": "http"}),
-                user_api_key_dict=user_api_key_dict,
-            )
+            await _unregister_team_models(team_id, (old_public_name,), prisma_client)
     elif not old_public_name and public_model_name:
         # First-time assignment of public name on an existing team deployment:
         # ensure the team's models list is updated so team routing can resolve it.
-        await team_model_add(
-            data=TeamModelAddRequest(
-                team_id=team_id,
-                models=[public_model_name],
-            ),
-            http_request=Request(scope={"type": "http"}),
-            user_api_key_dict=user_api_key_dict,
-        )
+        await _register_team_models(team_id, (public_model_name,), prisma_client)
     # else: old_public_name == public_model_name (no rename needed)
-    # No team_model_add/delete calls required; public name is already registered
+    # No team list writes required; public name is already registered
 
 
 class ModelManagementAuthChecks:
@@ -1661,7 +1663,13 @@ class ModelManagementAuthChecks:
         user_api_key_dict: UserAPIKeyAuth,
         team_obj: LiteLLM_TeamTable | None = None,
         premium_user: bool = False,
+        router_kind: StrategyRouterKind | None = None,
     ) -> Literal[True]:
+        """``router_kind`` is the strategy of the deployment being touched (None for a regular model).
+
+        A non-admin team member holding ``AUTO_ROUTER_MANAGEMENT`` passes only for a strategy router;
+        callers that never classify their deployment keep the team-admin-only verdict.
+        """
         if premium_user is False:
             raise HTTPException(
                 status_code=403,
@@ -1669,14 +1677,24 @@ class ModelManagementAuthChecks:
             )
         if user_api_key_dict.user_role and user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN:
             return True
-        elif team_obj is None or not _is_user_team_admin(user_api_key_dict=user_api_key_dict, team_obj=team_obj):
-            raise HTTPException(
-                status_code=403,
-                detail={
-                    "error": f"Team ID={team_id} does not match the API key's team ID={user_api_key_dict.team_id}, OR you are not the admin for this team. Check `/user/info` to verify your team admin status."
-                },
+        if team_obj is not None and _is_user_team_admin(user_api_key_dict=user_api_key_dict, team_obj=team_obj):
+            return True
+        if (
+            team_obj is not None
+            and router_kind is not None
+            and team_member_has_permission(
+                user_api_key_dict=user_api_key_dict,
+                team_obj=team_obj,
+                permission=KeyManagementRoutes.AUTO_ROUTER_MANAGEMENT.value,
             )
-        return True
+        ):
+            return True
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": f"Team ID={team_id} does not match the API key's team ID={user_api_key_dict.team_id}, OR you are not the admin for this team. Check `/user/info` to verify your team admin status. Team members may manage the team's auto-routers when the team grants the '{KeyManagementRoutes.AUTO_ROUTER_MANAGEMENT.value}' member permission."
+            },
+        )
 
     @staticmethod
     def can_user_attach_credential(
@@ -1735,6 +1753,7 @@ class ModelManagementAuthChecks:
             user_api_key_dict=user_api_key_dict,
             team_obj=existing_team_row,
             premium_user=premium_user,
+            router_kind=_router_kind_of(model_params.litellm_params),
         )
         return True
 
@@ -1773,6 +1792,7 @@ class ModelManagementAuthChecks:
                 user_api_key_dict=user_api_key_dict,
                 team_obj=team_obj,
                 premium_user=premium_user,
+                router_kind=_router_kind_of(model_params.litellm_params),
             )
         ## Check non-team model auth
         elif user_api_key_dict.user_role != LitellmUserRoles.PROXY_ADMIN:

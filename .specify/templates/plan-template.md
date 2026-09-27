@@ -57,7 +57,6 @@ specs/[###-feature]/
 ```
 
 ### Source Code (repository root)
-
 <!--
   ACTION REQUIRED: Replace the placeholder tree below with the concrete layout
   for this feature. Delete unused options and expand the chosen structure with

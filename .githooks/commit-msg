@@ -20,6 +20,28 @@ if [ -z "$COMMIT_MSG_FILE" ] || [ ! -f "$COMMIT_MSG_FILE" ]; then
     exit 1
 fi
 
+# Sentinel-based bypass detection (FR-006 / SC-005).
+# .githooks/pre-commit writes .git/.pre-commit-ran when it successfully
+# invokes the pre-commit framework. If the sentinel is absent at this
+# point (because the user ran `git commit --no-verify` and the wrapper
+# was skipped), append a Skipped-Hooks: pre-commit trailer so reviewers
+# can identify bypass commits. Detection lives outside the framework
+# on purpose: a hook registered in .pre-commit-config.yaml would itself
+# be skipped by --no-verify, leaving the bypass invisible.
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+if [ -n "$repo_root" ]; then
+    sentinel_file="$repo_root/.git/.pre-commit-ran"
+else
+    sentinel_file=""
+fi
+if [ -n "$sentinel_file" ] && [ -f "$sentinel_file" ]; then
+    rm -f "$sentinel_file"
+else
+    if ! grep -q '^Skipped-Hooks: pre-commit$' "$COMMIT_MSG_FILE"; then
+        printf '\nSkipped-Hooks: pre-commit\n' >> "$COMMIT_MSG_FILE"
+    fi
+fi
+
 # First non-comment, non-empty line is the subject.
 subject=""
 while IFS= read -r line || [ -n "$line" ]; do

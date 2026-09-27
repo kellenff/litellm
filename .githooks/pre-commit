@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+#
+# pre-commit — delegate Git's pre-commit stage to the `pre-commit` framework.
+#
+# Installed by scripts/install_git_hooks.sh via `core.hooksPath = .githooks`.
+# Writes a sentinel file (.git/.pre-commit-ran) before invoking the framework
+# so that .githooks/commit-msg can detect whether the framework ran for this
+# commit and append a `Skipped-Hooks: pre-commit` trailer if it did not
+# (i.e. when the user ran `git commit --no-verify`). FR-006 / SC-005.
+#
+# Bypass: `git commit --no-verify` skips this script entirely, which is the
+# whole point of --no-verify. The bypass is then recorded in the commit
+# message by .githooks/commit-msg.
+#
+# Failure surface:
+#   - pre-commit binary missing on PATH -> one-line install hint, exit 2.
+#   - framework hooks report failure    -> framework exits non-zero,
+#                                         Git surfaces hook output, commit
+#                                         blocked. FR-004.
+
+set -eu
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+SENTINEL="${REPO_ROOT}/.git/.pre-commit-ran"
+
+if ! command -v pre-commit >/dev/null 2>&1; then
+  printf 'pre-commit: pre-commit not found on PATH. Install with: uv sync (adds pre-commit to the dev group) or pipx install pre-commit\n' >&2
+  exit 2
+fi
+
+rm -f "$SENTINEL"
+trap 'rm -f "$SENTINEL"' EXIT
+
+touch "$SENTINEL"
+exec pre-commit run --hook-stage pre-commit

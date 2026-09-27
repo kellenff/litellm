@@ -1,0 +1,29 @@
+# pre-commit framework config for LiteLLM.
+# Run via .githooks/pre-commit wrapper (core.hooksPath = .githooks).
+# Hook set is the fast subset of CI's `make check`: file hygiene + ruff lint/format.
+# Slower checks (basedpyright, full test suite, dashboard lint) stay manual.
+# FR-005 / SC-003: any hook added here MUST also run in CI; otherwise the local
+# `scripts/check_hook_ci_parity.py` check (added by this feature) will fail.
+# FR-006 / SC-005: bypass visibility lives in .githooks/commit-msg, not here.
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-added-large-files
+      - id: detect-private-key
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.22
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+        # ruff >= 0.6 gained default notebook support. The repo's cookbook
+        # notebooks predated that and parse-fail on certain magic lines;
+        # exclude them locally and let CI's stricter scope handle them.
+        exclude: ^cookbook/.*\.ipynb$

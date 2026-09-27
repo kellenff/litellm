@@ -47,3 +47,7 @@ Sources are immutable inputs: the wiki never edits them.
 | S062 | `.github/ISSUE_TEMPLATE/bug_report.yml` | file | 2026-09-26 | 2026-09-26 | pr-and-issues.md |
 | S063 | `.github/ISSUE_TEMPLATE/config.yml` | file | 2026-09-26 | 2026-09-26 | pr-and-issues.md |
 | S064 | `.github/ISSUE_TEMPLATE/feature_request.yml` | file | 2026-09-26 | 2026-09-26 | pr-and-issues.md |
+| S065 | `specs/002-add-git-hooks-precommit/spec.md` | file | 2026-09-27 | 2026-09-27 | pre-commit-framework-rule-set.md, bypass-visibility-mechanism.md, pre-commit-hook-wiring.md, install-git-hooks.md |
+| S066 | `specs/002-add-git-hooks-precommit/research.md` | file | 2026-09-27 | 2026-09-27 | pre-commit-framework-rule-set.md, bypass-visibility-mechanism.md, pre-commit-hook-wiring.md |
+| S067 | `specs/002-add-git-hooks-precommit/data-model.md` | file | 2026-09-27 | 2026-09-27 | pre-commit-hook-wiring.md, bypass-visibility-mechanism.md, ci-hook-parity-gate.md |
+| S068 | `specs/002-add-git-hooks-precommit/contracts/pre-commit-config.md` | file | 2026-09-27 | 2026-09-27 | pre-commit-framework-rule-set.md, ci-hook-parity-gate.md |

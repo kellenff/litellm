@@ -1,8 +1,8 @@
 ---
 title: Repo dev loop
 type: howto
-sources: [S007]
-updated: 2026-09-26
+sources: [S007, S065]
+updated: 2026-09-27
 ---
 
 Daily verification loop in this repo (S007).
@@ -24,4 +24,6 @@ The Admin UI dev server is `npm run dev` in `ui/litellm-dashboard`, served on po
 
 Style: Python max line length is **120**, not 88 (S007). Auto-format after every edit per [Programming Preferences](../../AGENTS.md) (oxfmt for `.m?[t,j]sx?`, ruff for `.py`, rustfmt for `.rs`, gofmt for `.go`).
 
-Related: [Lint, type, and test budgets](./lint-type-test-budgets.md), [PR target branch](./pr-target-branch.md).
+The pre-commit framework runs on every `git commit` and blocks commits that fail the configured hooks; running `make install-hooks` once per fresh clone wires it in alongside the existing Conventional Commits and Conventional Branches shell hooks (S065). See [Install git hooks](./install-git-hooks.md) and [Pre-commit hook wiring](./pre-commit-hook-wiring.md) for the wiring and [Bypass visibility mechanism](./bypass-visibility-mechanism.md) for the `--no-verify` trailer.
+
+Related: [Lint, type, and test budgets](./lint-type-test-budgets.md), [PR target branch](./pr-target-branch.md), [Install git hooks](./install-git-hooks.md), [Pre-commit framework rule set](./pre-commit-framework-rule-set.md).

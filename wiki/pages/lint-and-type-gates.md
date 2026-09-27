@@ -1,8 +1,8 @@
 ---
 title: Lint and type gates
 type: component
-sources: [S010, S011, S012, S013]
-updated: 2026-09-26
+sources: [S010, S011, S012, S013, S065]
+updated: 2026-09-27
 ---
 
 `make check` (formerly `make pre-commit`) runs `scripts/pre_commit_lint.sh` to predict CI lint for the branch (S010). The script scopes itself: staged files are the scope; nothing staged means the working tree's diff against the merge base with origin's current default branch, resolved via `scripts/default_branch.py --base` (S010).
@@ -31,9 +31,13 @@ The wrapper writes its full output to `.git/pre_commit_lint.log` (overwriting th
 
 The four budget files hold the per-rule limits in a structured form (see [CI budgets](./ci-budgets.md)). Several rules are frozen at limit 0 (S012, S015): LIT005, LIT007, LIT009, LIT013; suppression-without-reason, TypeGuard/TypeIs, inert `# type: ignore`, suppression-of-nothing. LIT010 (no `: Final`) and LIT011 (parameter rebind / in-place mutate) were seeded at 1.5x the count left after the Final sweep; new code cannot cross that line. Any suppression the rule permits must name the exact token inside brackets — `# noqa: TID251` or `# pyright: ignore[reportArgumentType]` — and carry a reason. The broader rationale for the ratchet (do not edit budgets on a PR branch) lives in [Lint, type, and test budgets](./lint-type-test-budgets.md).
 
+The pre-commit framework runs the same `ruff` and `ruff-format` checks locally on staged files at commit time, so contributors catch the formatter and most lint regressions before pushing instead of discovering them in CI (S065). The local set is a strict subset of the CI rule set; the drift-prevention gate that enforces this invariant is documented in [CI hook parity gate](./ci-hook-parity-gate.md).
+
 ## Related
 
 - [Lint, type, and test budgets](./lint-type-test-budgets.md): broader decision
 - [CI budgets](./ci-budgets.md): the four budget files and their workflows
 - [Repo dev loop](./dev-loop.md): running gates during iteration
 - [Test conventions](./test-conventions.md): the test-quality rules this gate extends
+- [Pre-commit framework rule set](./pre-commit-framework-rule-set.md): the local pre-commit rule set
+- [CI hook parity gate](./ci-hook-parity-gate.md): drift prevention between local and CI rule sets

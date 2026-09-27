@@ -1,8 +1,8 @@
 ---
 title: PRs and issues
 type: howto
-sources: [S061, S062, S063, S064, S007]
-updated: 2026-09-26
+sources: [S061, S062, S063, S064, S007, S065]
+updated: 2026-09-27
 ---
 
 How to write PRs, bug reports, and feature requests in this repo (S061, S062, S063, S064, S007).
@@ -31,4 +31,6 @@ All three documents are public-facing; never mention a customer or customer comp
 
 Human-facing text in PRs, issues, commit messages, and release notes follows the same style guide (S007): no emojis, no em dashes, no "It's not X, it's Y" framing, prose over bullets when bullets do not help, no trailing "." at paragraph end. GitHub comments must stay human-readable and 15 to 25 words max (S007).
 
-Related: [Test conventions](./test-conventions.md), [Repo dev loop](./dev-loop.md), [PR target branch](./pr-target-branch.md).
+A commit made with `git commit --no-verify` carries a `Skipped-Hooks: pre-commit` trailer in the commit message body, so reviewers can grep for bypassed hooks per commit (S065). `git log --format='%H %s%n%b' | grep -B1 '^Skipped-Hooks: pre-commit'` lists every commit where the pre-commit framework was bypassed. See [Bypass visibility mechanism](./bypass-visibility-mechanism.md) for how the trailer is produced.
+
+Related: [Test conventions](./test-conventions.md), [Repo dev loop](./dev-loop.md), [PR target branch](./pr-target-branch.md), [Bypass visibility mechanism](./bypass-visibility-mechanism.md).

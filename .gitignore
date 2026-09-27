@@ -148,5 +148,8 @@ crash.*.log
 ui/litellm-dashboard/out/
 litellm.log
 
+# Scratch files created by scripts/test_pre_commit.sh under the repo root
+.pre-commit-test-*
+
 .coverage-rust
 coverage-rust.xml

@@ -100,7 +100,7 @@ os.environ["ANTHROPIC_API_KEY"] = "your-anthropic-key"
 # OpenAI
 response = completion(model="openai/gpt-4o", messages=[{"role": "user", "content": "Hello!"}])
 
-# Anthropic  
+# Anthropic
 response = completion(model="anthropic/claude-sonnet-4-20250514", messages=[{"role": "user", "content": "Hello!"}])
 ```
 
@@ -619,11 +619,15 @@ This requires uv to be installed.
 git clone https://github.com/BerriAI/litellm.git
 cd litellm
 make install-dev    # Install development dependencies
+make install-hooks  # Wire local git hooks (Conventional Commits + Branches + pre-commit framework)
 make format         # Format your code
 make lint           # Run all linting checks
 make test-unit      # Run unit tests
 make format-check   # Check formatting only
+make check          # Run the full CI-equivalent lint on the changed scope
 ```
+
+`make install-hooks` enables a `.git/.pre-commit-ran` sentinel-wrapped pre-commit framework run on every `git commit`. The hooks it runs are declared in `.pre-commit-config.yaml`: trailing-whitespace, end-of-file-fixer, check-yaml, check-toml, check-added-large-files, detect-private-key, ruff, ruff-format. Commits created with `git commit --no-verify` (e.g. emergency hotfixes) skip the framework but the bypass is recorded in the commit message as a `Skipped-Hooks: pre-commit` trailer by `.githooks/commit-msg`, so reviewers can identify them. For the slower CI-equivalent lint (basedpyright, full test suite, dashboard lint), run `make check` before pushing — it is deliberately not auto-fired as a git hook. If `pre-commit` is not on your PATH, `make install-hooks` will tell you how to install it: `uv sync` (or `pipx install pre-commit`, or `pip install pre-commit`). If you edit `.pre-commit-config.yaml` and hooks appear stale, run `pre-commit clean` to clear the cache (the install script does this automatically on every run).
 
 For detailed contributing guidelines, see [CONTRIBUTING.md](CONTRIBUTING.md).
 

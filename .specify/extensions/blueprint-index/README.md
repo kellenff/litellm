@@ -1,0 +1,392 @@
+# Blueprint Index — Living Architecture Map
+
+[![tests](https://github.com/ogil109/spec-kit-blueprint/actions/workflows/tests.yml/badge.svg)](https://github.com/ogil109/spec-kit-blueprint/actions/workflows/tests.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+![Spec Kit](https://img.shields.io/badge/Spec_Kit-%E2%89%A50.10-blue)
+![status](https://img.shields.io/badge/status-experimental-orange)
+
+A [Spec Kit](https://github.com/github/spec-kit) extension that keeps a **living
+architecture map** of your project honest — and gives you a **deterministic,
+low-friction, machine-first CI gate** that catches when the map, the specs, and the
+code drift apart, no matter how a change was made.
+
+It doesn't change how you build. It keeps the map true, and it's designed so a CI
+step (or a CI agent) can **detect and heal drift automatically**.
+
+> **What this is really about — drift, not retrieval.** Getting an agent to *read* your
+> codebase is increasingly handled by your editor/agent. The unsolved half is keeping a
+> project's architectural picture *current* as code changes out-of-band: *"code evolves,
+> the specification does not… a linter does not flag it, CI does not flag it, the system
+> ships with drift baked in."* This extension is a deterministic gate for exactly that.
+
+## Who this is for
+
+**Use it if** you practise spec-driven development (Spec Kit) on a **real, evolving —
+often brownfield — codebase**, you feel the specs and the architecture picture going
+stale as the code changes, and you want **CI to catch that drift** instead of discovering
+it later.
+
+**You probably don't need it if** you're just starting SDD on a small or greenfield
+project (Spec Kit's core flow is enough), you want SDD *lighter*, or your pain is the
+agent *not knowing your codebase* — that's retrieval, handled by your editor/agent; this
+keeps the map *current*, it doesn't read the code for you.
+
+## How to integrate
+
+1. **Install** it into a Spec Kit project (below).
+2. **`init` once** — from existing code (`--from-code`), from a design doc, or **both**
+   (`--from-code docs/architecture.md`, the richest brownfield seeding: code decides the
+   settled structure, docs enrich the prose and contribute the unbuilt backlog) — to
+   create the map.
+3. **Add `check` to CI** — this is the integration point; it fails the build only when the
+   map factually contradicts the specs/code (see the gate below).
+4. **Keep building normally.** The map maintains itself as the gate nudges you
+   (`distill` a shipped slice, `remap` after a refactor, `init --from-code` a new module).
+
+## The tiered coherence gate (the core)
+
+`check` is a deterministic gate (no LLM) that classifies every issue into two tiers, so
+it can run in CI **without crying wolf on every commit**:
+
+- 🔴 **HARD — the map *contradicts* reality → blocks the merge (exit 1).** Precise,
+  low-false-positive:
+  - **drift** — a built spec the map doesn't index (e.g. a spec born from an external
+    tracker). → `distill`
+  - **dangling** — a section pointing at code that's been deleted. → `remap`
+- 🟡 **SOFT — the map *may* be behind → advisory, does NOT block (exit 0).** Coarse
+  signals where the map is usually still true at architecture altitude:
+  - **stale** — code changed under a mapped area (a refactor/hotfix, spec or not). → `remap`
+  - **unmapped** — new code that no section maps (a module added out-of-band). → `init --from-code <path>`
+  - **unmanaged** — a section `init` hasn't processed yet. → `init`
+  - **unstamped** — a mapped area with no baseline yet. → `restamp`
+
+`--strict` promotes SOFT to blocking for teams that want full enforcement. The exit code
+is a first-class signal, independent of output format.
+
+Running it looks like this (human-readable on a terminal):
+
+```console
+$ blueprint-state.sh check --human
+HARD — the map contradicts reality (blocks merge):
+  DRIFT     007-refunds built spec not in the map   → /speckit.blueprint-index.distill 007-refunds
+
+SOFT — the map may be behind (advisory):
+  STALE     src/payments code changed since mapped (b55500a1 -> 448a74e2)   → /speckit.blueprint-index.remap src/payments
+  UNSTAMPED src/billing no git baseline recorded yet   → blueprint-state.sh restamp --path src/billing
+  UNMAPPED  src/notifications tracked code no section maps   → /speckit.blueprint-index.init --from-code src/notifications
+
+1 blocking, 3 advisory
+$ echo $?
+1
+```
+
+```yaml
+# .github/workflows/blueprint.yml — blocks only when the map is factually behind
+- run: bash .specify/extensions/blueprint-index/scripts/bash/blueprint-state.sh check
+```
+
+## Machine-first output — built to be consumed
+
+The two machine surfaces — **`check`** (the gate) and **`next`** (the harness) — follow
+the git/`--porcelain` convention: **JSON when piped/non-interactive (CI, an agent),
+human-readable on a terminal**; `--json`/`--human` force either. (`status` is the
+human dashboard and always prints prose — use `check` for a machine-readable view.)
+
+```json
+{ "blueprint_schema": "1", "command": "check", "blueprint": "docs/blueprint.md",
+  "in_sync": false, "blocking": 1, "advisory": 1, "strict": false,
+  "issues": [
+    { "severity": "hard", "type": "drift", "target": "007-refunds",
+      "detail": "built spec not in the map",
+      "remedy": { "run": "/speckit.blueprint-index.distill 007-refunds", "kind": "authored" } },
+    { "severity": "soft", "type": "unstamped", "target": "src/billing",
+      "detail": "no git baseline recorded yet",
+      "remedy": { "run": "blueprint-state.sh restamp --path src/billing", "kind": "deterministic" } }
+  ] }
+```
+
+Each issue carries a **self-describing remedy** and its `kind`, so a CI LLM backend can
+**self-heal**:
+
+```
+check --json → for each issue, run remedy.run:
+  · kind=deterministic → apply + commit (safe, no LLM judgment)
+  · kind=authored      → run the agent, land it as a reviewable PR
+→ re-run check → exit 0 when the map matches reality
+```
+
+Be clear-eyed about the split: **`unstamped` is the only `deterministic` remedy** —
+refreshing a baseline needs no judgment. Everything else (`drift`, `dangling`, `stale`,
+`unmapped`, `unmanaged`) is `authored`, meaning an agent rewrites map prose and a human
+reviews the PR. The `kind` field exists so CI never has to guess which is which.
+
+## Commands
+
+| Command | What it does |
+|---------|--------------|
+| `speckit.blueprint-index.init` | Scaffold the map — from a design doc (greenfield) or `--from-code` to reverse-map existing code (brownfield). Idempotent. |
+| `speckit.blueprint-index.status` | Read-only dashboard: detailed / settled / context / unmanaged sections, drift, where each spec stands. |
+| `speckit.blueprint-index.distill` | Collapse a finished spec's section to a digest + pointer; stamp the slice's code baseline. |
+| `speckit.blueprint-index.remap` | Re-derive a section from current code + refresh its git baseline (resync after out-of-band changes). |
+| `speckit.blueprint-index.recover` | Stage-2 architecture recovery: an expert agent derives how the subsystems relate — dependency and cross-cutting edges, layering, cycles — as evidence-anchored relation markers the gate validates. |
+
+Plus the script-level oracles the commands and CI share: `blueprint-state.sh check` (the
+tiered gate), `blueprint-state.sh restamp` (deterministic baseline refresh), and
+`blueprint-slice.sh` (the deterministic brownfield partitioner).
+
+## The deterministic on-ramp (`init --from-code`)
+
+A map that comes out different on every on-ramp run is not a map you can trust, so the
+brownfield on-ramp separates two jobs the way architecture-recovery tooling always has —
+**deterministic enumeration first, subjective interpretation second**:
+
+1. `blueprint-slice.sh` computes the **section set** purely from `git ls-files` +
+   checked-in config: same repo state + same config ⇒ **byte-identical partition**. It
+   never opens a file — directory sizes, path names, and the *presence* of build
+   manifests (`pyproject.toml`, `package.json`, `go.mod`, …) are the only evidence — so
+   it stays language-agnostic. Every tracked file lands in exactly one bucket:
+   a **section** (code or context), an **excluded** pattern match, or a reported
+   root-level file. Nothing is silently absent. **`scaffold` then writes the map
+   itself** — title, TOC, every section with markers, banners, and `TODO(prose)`
+   placeholders — so the agent never writes structure at all.
+2. The agent's only edit is replacing the **`TODO(prose)`** placeholders (role,
+   mechanics, entry points) — judgment goes into describing the code and, when the cut
+   is wrong, into `blueprint-config.yml` (`slice.*`, `coverage.exclude`) followed by a
+   re-scaffold: the override is checked in and replays identically forever.
+
+The prose itself follows a shipped **architecture-recovery contract**
+(`templates/section-anatomy.md`): every settled section has the same five-part shape —
+banner, role sentence, evidence-anchored digest, closer — written by a fixed procedure
+(inventory → boundary-before-depth → write → self-check), so two recovery runs converge
+on the same anchors even where wording differs. `init --from-code`, `remap`, and
+`distill` all write to the same contract, which is what makes a map seeded from code
+and a map seeded from a design doc read as **one document type**: as sections settle,
+the only lasting difference is the provenance marker.
+
+Re-runs against an existing map are **additive**: already-covered paths are subtracted,
+new code shows up as new proposed sections, and an existing section that outgrew
+`slice.max_files` surfaces as an advisory instead of being silently re-partitioned.
+**Stage 2 — the intelligence layer.** The deterministic partition is the *input* to a
+dedicated architecture-recovery agent (`recover`): expert judgment decides what each
+subsystem **is** and how they **relate** — `uses` edges, layering, cycles, and
+`crosscuts` edges for facilities that thread the map. Its output is a **facts
+file**, and `blueprint-slice.sh render` writes both the digests and the
+`<!-- blueprint:relation … -->` markers from it after validating every claim
+(sections exist, evidence tracked and under the right markers, endpoints managed —
+violations are listed wholesale and nothing is written). The split is strict: the
+*semantic truth* of a fact is the agent's call; everything **checkable** about it is
+the machine's — at render time and forever after via `check`'s
+`relation`/`relation-evidence` decay issues. No evidence, no claim.
+
+Conformance is **machine-checked, not an honor system**: the `check` gate recomputes
+the partition on every run and raises `structure` issues for any marker moved between
+computed sections or absent from one — the merge/misplacement class that coverage
+alone cannot see, because the files stay covered. The same gate's coverage scan spans
+**all** top-level directories, so a tree the on-ramp missed (or code added later) is
+flagged `unmapped` rather than staying invisible. Hand-authored maps whose headings
+are not computed paths are never judged by the structure check.
+
+```console
+$ blueprint-slice.sh
+blueprint-slice — deterministic partition (max_files=400, min_files=3)
+
+  CODE     src/core                        350 files  [fits]
+  CODE     src (remainder, 3 markers)       12 files  [remainder]
+  CODE     pkg/mylib                         2 files  [module]
+  CONTEXT  docs                           1181 files  [context-dir]
+
+  root-level files (outside coverage by design): 8
+  excluded:
+    .github              (pattern: .*)
+    specs                (pattern: specs)
+```
+
+## Install
+
+```bash
+specify extension add blueprint \
+  --from https://github.com/ogil109/spec-kit-blueprint/releases/latest/download/blueprint.zip
+# or, for local development:
+specify extension add /path/to/spec-kit-blueprint --dev
+```
+
+**Requirements:** a Spec Kit project (`.specify/`), **Spec Kit ≥ 0.10**, **git** (for the
+code-baseline checks), and **bash** (Unix/macOS) *or* **PowerShell**: both scripts ship
+both ports (`blueprint-state`, `blueprint-slice`), byte-parity-enforced in CI
+(`tests/ps_parity_test.sh`); Windows-native path handling is still community-unverified.
+
+> **macOS note:** the oracle is written in portable POSIX shell (BSD `sed`/`grep` safe —
+> guarded by `tests/portability_lint_test.sh`), but the **system `/bin/bash`** shipped
+> with the newest macOS (Apple's bash 3.2 build on macOS 26) has a parser regression that
+> breaks `case` statements inside `$(...)` command substitution, which the oracle uses.
+> For local runs on that macOS, install a modern bash (`brew install bash`) and invoke
+> the script with it (`/opt/homebrew/bin/bash …/blueprint-state.sh check`). Linux CI
+> runners ship bash 5.x and are unaffected.
+
+## Quickstart — the brownfield on-ramp, from a fresh install
+
+```bash
+# 1. Install into any Spec Kit project (creates .specify/extensions/blueprint-index/,
+#    registers the five /speckit.blueprint-index.* commands, scaffolds the config)
+specify extension add blueprint-index \
+  --from https://github.com/ogil109/spec-kit-blueprint/releases/latest/download/blueprint.zip
+
+# 2. One command runs the whole on-ramp — tell your agent:
+/speckit.blueprint-index.init --from-code
+#    Under the hood, in order (all shipped, nothing to configure first):
+#      scaffold  → the map is MACHINE-WRITTEN: sections, markers, TOC, banners
+#      recover   → ONE agent pass emits validated FACTS (role + digest facets +
+#                  relation edges, every claim evidence-anchored)
+#      render    → the machine writes the prose AND the relation markers from
+#                  those facts — they cannot contradict, and bad claims are
+#                  rejected wholesale before a byte lands
+#      restamp   → git baselines recorded on every section
+#      check     → structure conformance + coverage + relations machine-checked
+
+# 3. Add the gate to CI — done. The map now defends itself.
+bash .specify/extensions/blueprint-index/scripts/bash/blueprint-state.sh check
+
+# Have real design docs too? Richest brownfield seeding — code decides structure,
+# docs enrich prose and contribute the unbuilt backlog:
+/speckit.blueprint-index.init --from-code docs/architecture.md
+
+# Greenfield instead — seed the map from a design doc:
+/speckit.blueprint-index.init docs/master-spec.md
+
+# Life after the on-ramp: build with your normal spec-kit flow
+/speckit.blueprint-index.distill 001-some-slice   # spec shipped -> collapse it into the map
+/speckit.blueprint-index.remap src/payments       # after a change flagged STALE
+/speckit.blueprint-index.recover                  # repair flagged relations
+```
+
+Every step is re-runnable and idempotent; disagreeing with the computed cut is a
+`blueprint-config.yml` edit (`slice.max_files`, `slice.pin_dirs`, …) followed by a
+re-scaffold — checked in, replayed identically forever. Windows: every script has a
+PowerShell port at byte parity (`scripts/powershell/`).
+
+## The blueprint document
+
+An annotated table of contents is the index + architecture map. Each managed section
+carries a **provenance marker** under its heading — the extension's deterministic record
+of what it has processed:
+
+```markdown
+## 3. Payments
+<!-- blueprint:section state=distilled owner=specs/007-refunds -->
+> **Distilled — owned by `specs/007-refunds`** (implemented at `src/payments/`).
+<!-- blueprint:code path=src/payments sha=a1b2c3 -->
+```
+
+Section states: `detailed` (holding pen), `distilled owner=specs/<slug>`, `code`
+(brownfield), or `context` (framing — not a buildable slice). Code-mapping sections also
+carry a git-baseline marker. The prose banners are cosmetic — the **markers** are what
+the gate reads, so a hand-written banner can't fool it. `init` is **idempotent and
+non-destructive**: it stamps unmanaged sections, preserves managed ones, and never
+deletes content — so it also **formalizes an existing master doc** in place.
+
+## Autonomous harness (optional second payoff)
+
+Because the map is externalized state and the oracle computes the single next action
+deterministically, the same pieces are a **harness for long, multi-spec agent sessions**
+— an agent loops on `blueprint-state.sh next`, re-grounding on the filesystem each step
+so it can't drift. It's a documented pattern (no extra command); see
+[docs/autonomous-harness.md](./docs/autonomous-harness.md). `tests/harness_loop_test.sh`
+proves the loop sequences specs correctly (parking, stop bounds); the agent's authoring
+*within* a phase stays reviewed, not proven.
+
+## Honest boundaries
+
+- **Detection, not conformance.** The gate flags that the map is *behind* reality (a
+  spec not indexed, code that moved) — it does **not** verify the code *correctly*
+  implements its spec, and it doesn't check architectural boundaries. That deeper
+  conformance is a heavier, language-specific problem this deliberately doesn't tackle.
+- **A structural gate with one known blind spot.** It detects *new* code (the `unmapped`
+  signal) and *changed* mapped code, but it does **not** verify whether a distilled
+  **digest still faithfully reflects its spec** — it checks the *pointer*, not the prose.
+  Treat digests as human-reviewed content, not verified fact.
+- **The friction dial is the bet.** Making `stale` advisory (not blocking) is what makes
+  the gate usable in real CI; the tradeoff is that out-of-band code changes are *surfaced
+  and reconciled*, not hard-blocked (unless `--strict`). Whether this balance is right for
+  a given team is exactly what real usage will tell us.
+- **Map structure is computed; map content is rendered from validated facts.** The
+  brownfield on-ramp's *section set* comes from the deterministic partitioner — two
+  independent `init --from-code` runs produce the same structure, and every human
+  override lives in checked-in config where it replays identically. The agent's
+  entire authored output is a **facts file** (roles, evidence-anchored digest facets,
+  relation edges); `render` machine-validates every claim and writes the prose and
+  relation markers from the same source, so they cannot contradict and two recovery
+  runs are compared by diffing facts, not wording. What remains genuinely
+  agent-judged — and human-reviewed — is *which* facts to assert; `distill` and
+  `remap` author through the same facts flow (a distilled section's evidence may
+  also anchor into its owning spec's directory).
+- **A directory partition cannot express everything.** A subsystem that cross-cuts
+  directories (a `compat`/`util` facility threaded through the tree) can never be a
+  code section — markers are git tree/blob paths. Model it as a section with
+  `crosscuts` edges; cross-directory clusters would need a content-digest marker
+  format that is deliberately future work. The thresholds
+  (`max_files=400 / min_files=3`) are defensible defaults, not validated optima —
+  disagreeing with the cut is exactly what the checked-in config levers are for.
+- **Two known edges.** A `[NEEDS CLARIFICATION]` marker that a formatter has *wrapped
+  across lines* is not detected (the scan is line-based), so a spec with an open question
+  could advance a step. And **root-level loose files** (READMEs, manifests, a stray
+  `main.py` at the repo root) are outside the coverage scan by design — a repo that
+  keeps real source at its root should move it into a directory or accept that the map
+  won't track it. Paths containing spaces cannot be represented in markers and are
+  excluded (reported by the partitioner, never silently).
+- **Prior art:** the "spec↔code drift gate" concept has been articulated in the 2026
+  literature (e.g. arXiv 2606.27045). This extension's angle is being **brownfield-first,
+  language-agnostic (git baselines, not per-language static analysis), low-friction, and
+  shipped as a spec-kit extension** — rather than a greenfield, graph-based framework.
+
+## Status of this extension
+
+- Bash oracle + tiered gate: **tested** — `tests/oracle_test.sh` (state frontier,
+  provenance, context) and `tests/check_remap_test.sh` (hard/soft tiers, the friction
+  fix, `--strict`, and the JSON contract), against a real git repo. Dogfooded on a real
+  2,100-line brownfield project.
+- Harness loop: **tested** — `tests/harness_loop_test.sh`.
+- PowerShell ports (`scripts/powershell/blueprint-state.ps1`, `blueprint-slice.ps1`):
+  **byte-parity with the bash oracles enforced in CI** — `slice --json`, `scaffold`,
+  `render`, and `check --json` diffed over shared fixtures, exit codes included
+  (pwsh 7.5, Linux). **Windows itself is still unverified** (path separators,
+  git-for-Windows), so that's the open gap.
+
+This is an early, honestly-scoped extension: the deterministic gate is tested and
+dogfooded; whether its low-friction balance is right for *your* team is exactly what
+we'd like to learn.
+
+## Support
+
+Questions, bugs, or "it flagged X and shouldn't have" — please open an issue on the
+[repository](https://github.com/ogil109/spec-kit-blueprint). Feedback on the gate's
+friction (false positives/negatives on a real repo) is especially welcome.
+
+## Contributing
+
+Contributions welcome — this is a community Spec Kit extension. The oracles are
+plain bash + git (PowerShell ports at byte parity), organized as thin entry
+scripts over single-responsibility `lib/` modules, so the tests run anywhere:
+
+```bash
+for t in tests/*_test.sh; do bash "$t"; done   # the filesystem is the roster
+```
+
+Iterate locally with `specify extension add /path/to/spec-kit-blueprint --dev`. Please open an
+issue to discuss anything larger than a fix before sending a PR. The PowerShell port is
+parity-verified on Linux/pwsh; a **Windows** maintainer to confirm it there is very welcome.
+
+Commits follow [Conventional Commits](https://www.conventionalcommits.org/) and CI
+validates them; versioning and the changelog are generated by
+[commitizen](https://commitizen-tools.github.io/commitizen/) (`uv sync --group dev`, then
+`uv run cz commit` / `cz bump`) — never hand-written. See
+[CONTRIBUTING.md](./CONTRIBUTING.md).
+
+## Authors & acknowledgment
+
+Built by [ogil109](https://github.com/ogil109), with AI assistance (Claude Code) per
+Spec Kit's contributing guidelines. The drift-gate concept builds on ideas in the 2026
+spec-driven-development literature (see *Honest boundaries*).
+
+## License
+
+[MIT](./LICENSE).

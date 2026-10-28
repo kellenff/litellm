@@ -1,0 +1,46 @@
+# Blueprint extension configuration
+# Installed to: .specify/extensions/blueprint-index/blueprint-config.yml
+# Absent keys fall back to the shipped defaults shown here; unknown keys and
+# wrong types are hard errors (nothing runs) — this file is the ONLY config
+# source, so overrides are always checked in and replay identically.
+
+blueprint:
+  path: ".specify/memory/blueprint.md"
+
+distill:
+  require_confirmation: true
+
+slice:
+  max_files: 400
+  min_files: 3
+  boundary_files:
+    - pyproject.toml
+    - setup.py
+    - package.json
+    - Cargo.toml
+    - go.mod
+    - pom.xml
+    - build.gradle
+    - CMakeLists.txt
+    - composer.json
+    - Gemfile
+  context_dirs:
+    - docs
+    - doc
+    - documentation
+  # Coarse-altitude pins for a ~14.8k-file monorepo: each subtree below is ONE
+  # subsystem on the map, so the thresholds never shatter it into per-provider /
+  # per-crate / per-area sections. Changing a pin here (and re-scaffolding) is
+  # the checked-in way to re-cut the map; it replays identically on every run.
+  pin_dirs:
+    - litellm/llms                  # translation layer: 152 provider dirs = one subsystem
+    - litellm/proxy/_experimental   # staging tree; atomic, not architecture-bearing yet
+    - tests                         # one test tree (would otherwise be ~258 sections)
+    - ui                            # the Next.js admin dashboard (one app)
+    - litellm-rust                  # Rust workspace: one subsystem on a Python-first map
+    - cookbook                      # example notebooks/scripts, not buildable architecture
+
+coverage:
+  exclude:
+    - ".*"      # hidden top-level dirs (.github, .specify, ...)
+    - "specs"   # first-class spec-kit state, gated by distill drift instead

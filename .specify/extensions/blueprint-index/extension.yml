@@ -1,0 +1,80 @@
+schema_version: "1.0"
+
+extension:
+  id: blueprint-index
+  name: "Blueprint Index — Living Architecture Map"
+  version: "0.3.0"
+  description: "A living architecture map for spec-driven projects, kept honest by a deterministic, low-friction, machine-first CI gate (JSON output, self-healable) that blocks only when the map contradicts the specs or code — and warns, without blocking, on the rest. Brownfield or greenfield."
+  category: process
+  effect: read-write
+  author: ogil109
+  repository: https://github.com/ogil109/spec-kit-blueprint
+  license: MIT
+  homepage: https://github.com/ogil109/spec-kit-blueprint/tree/main
+
+requires:
+  speckit_version: ">=0.10.0"
+
+provides:
+  commands:
+    - name: speckit.blueprint-index.init
+      file: commands/speckit.blueprint-index.init.md
+      description: "Scaffold the architecture map — seed from a design doc (greenfield) or reverse-map existing code (--from-code, brownfield)"
+    - name: speckit.blueprint-index.status
+      file: commands/speckit.blueprint-index.status.md
+      description: "Show the map's coherence state: detailed vs settled sections, distill drift, and where each spec stands"
+    - name: speckit.blueprint-index.distill
+      file: commands/speckit.blueprint-index.distill.md
+      description: "Collapse a finished spec's section to an at-a-glance digest + pointer, and stamp the slice's code baseline so drift can be detected"
+    - name: speckit.blueprint-index.remap
+      file: commands/speckit.blueprint-index.remap.md
+      description: "Re-derive a section from current code and refresh its git baseline — resync the map after out-of-band code changes (run the check gate in CI to detect them)"
+    - name: speckit.blueprint-index.recover
+      file: commands/speckit.blueprint-index.recover.md
+      description: "Stage-2 architecture recovery: derive how the machine-detected subsystems relate — dependency edges and cross-cutting concerns — as evidence-anchored, oracle-validated relation markers"
+
+  templates:
+    - name: blueprint-template
+      file: templates/blueprint-template.md
+      description: "The blueprint document type: decreasing-detail map, provenance markers, two on-ramps"
+    - name: section-anatomy
+      file: templates/section-anatomy.md
+      description: "The shared prose contract for every settled section + the architecture-recovery procedure (init --from-code, remap, distill all write to it)"
+
+  config:
+    - name: "blueprint-config.yml"
+      template: "config-template.yml"
+      description: "Blueprint location and distillation behavior"
+      required: false
+
+  # Each entry must be a name/file mapping: spec-kit's manifest validator
+  # (v0.16.5+, the first release to support provides.scripts) rejects bare
+  # path strings outright, failing the documented `specify extension add` path.
+  scripts:
+    - name: blueprint-state
+      file: scripts/bash/blueprint-state.sh
+      description: "The tiered coherence gate (check) and deterministic baseline refresh (restamp)"
+    - name: blueprint-state-ps1
+      file: scripts/powershell/blueprint-state.ps1
+      description: "PowerShell port of the coherence gate, parity-verified against the Bash oracle"
+    - name: blueprint-slice
+      file: scripts/bash/blueprint-slice.sh
+      description: "Deterministic brownfield partitioner: computes the section set from git ls-files + checked-in config and writes the map skeleton itself (scaffold); the check gate validates structural conformance"
+    - name: blueprint-slice-ps1
+      file: scripts/powershell/blueprint-slice.ps1
+      description: "PowerShell port of the partitioner (slice/scaffold/render), byte-parity-verified against the bash oracle in CI"
+
+tags:
+  - "blueprint"
+  - "architecture"
+  - "coherence"
+  - "drift"
+  - "brownfield"
+  - "autonomous"
+  - "ci"
+
+defaults:
+  blueprint:
+    path: ".specify/memory/blueprint.md"
+  distill:
+    require_confirmation: true

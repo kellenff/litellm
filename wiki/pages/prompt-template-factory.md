@@ -1,0 +1,20 @@
+---
+title: Prompt template factory
+type: component
+sources: [S039, S040]
+updated: 2026-09-26
+---
+
+The shared entry point for converting OpenAI-shaped messages into the wire format each provider expects lives in `litellm/litellm_core_utils/prompt_templates/factory.py` (S040). It is a 5,582-line file because prompt templating is the single place where provider-by-provider conversion meets message-shape conversion, and pulling these apart would force every guardrail and integration to re-implement the same surface detection (S040).
+
+**Surfaces it normalizes.** The file covers at least: Anthropic Messages (`anthropic_messages_pt`, `convert_to_anthropic_tool_invoke`, `convert_to_anthropic_tool_result`), Anthropic text completions (`claude_2_1_pt`, `anthropic_pt`), Bedrock Converse (`BedrockConverseMessagesProcessor`, `_bedrock_converse_messages_pt`, the entire tool-call-result and document-name deduplication pass), Bedrock Titan (`amazon_titan_pt`), Gemini text and vision (`gemini_text_image_pt`, `_gemini_vision_convert_messages`, the thought-signature tool-call-id encoding), Vertex/Anthropic tool-call interop (`convert_to_anthropic_tool_invoke_xml`), Azure OpenAI (`convert_to_azure_openai_messages`), Cohere (`cohere_messages_pt_v2`), Mistral (delegated to `MistralConfig._transform_messages`), HuggingFace chat templates (`hf_chat_template`), older models that need legacy prompts (`alpaca_pt`, `llama_2_chat_pt`, `mistral_instruct_pt`, `falcon_chat_pt`, `mpt_chat_pt`, `wizardcoder_pt`, `phind_codellama_pt`, `deepseek_r1_pt`), and tool-call-id sanitization that crosses Bedrock/Anthropic/OpenAI boundaries (S040).
+
+**Entry point.** `prompt_factory(model, messages, custom_llm_provider, ...)` is the function everything else routes through. It dispatches on `custom_llm_provider` first, then falls back to model-name substring matching for the legacy HuggingFace and Together paths, then to `hf_chat_template`, then to `default_pt` on exception (S040). Tool-call normalization lives alongside the surface conversion (`NormalizedToolCall`, the parsers that produce them, the `add_cache_control_to_content` helper for prompt caching, and the `sanitize_messages_for_tool_calling` pass that drops unsignable thinking blocks and merges orphaned tool results) so a single call can both shape messages and fix them up for the target provider (S040).
+
+**The rule.** New format-detection logic MUST live here first, not in each guardrail or integration. If a new provider surface needs to know "is this Anthropic Messages or Chat Completions or Responses API?", the answer comes from `factory.py` (S040). Per-surface parsing in each guardrail duplicates the detection, drifts when a new surface appears, and makes spend logs inconsistent across surfaces (S040). If you find yourself writing `if "anthropic" in model_name` in a new module, that decision belongs in `factory.py`.
+
+**How to add a new format.** Add a new `*_pt` function in `factory.py` that takes `messages: list` and any provider-specific args, then add a branch in `prompt_factory` keyed by either `custom_llm_provider` (preferred, provider-level dispatch) or a model-name substring (legacy HF/Together-style only). If the new format also needs tool-call normalization, add a `NormalizedToolCall` producer next to the surface function so `sanitize_messages_for_tool_calling` can find it. The existing PR pattern: each provider added one surface function plus one `prompt_factory` branch; follow the same shape rather than inventing a side channel (S040).
+
+**Adjacent helpers.** `common_utils.py` next door holds the small content-shape primitives (`convert_content_list_to_str`, `infer_content_type_from_url_and_content`, `parse_tool_call_arguments`, `is_unsignable_thinking_block`) that `factory.py` reuses; prefer those over re-deriving the same checks in a caller (S040).
+
+Related: [The LLM Wiki pattern](./llm-wiki-pattern.md).

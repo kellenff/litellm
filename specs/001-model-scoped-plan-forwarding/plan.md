@@ -131,7 +131,7 @@ For an **in-scope** target, the request's scoped header is left as it is, and th
 
 For an **out-of-scope** target, the attempt's scoped header is replaced with one that carries no authorization for the provider, and the existing credential precedence falls through to the target's own configured credential. No new provider path, no new flag, no new credential field
 
-The rewrite targets the attempt's own request kwargs. The fallback chain copies the request kwargs per attempt at `litellm/router_utils/fallback_event_handlers.py:8552-8557`, and the probe confirmed the rewrite does not reach the next attempt. That is what makes the per-hop re-evaluation work: each attempt decides against its own selected target
+The rewrite targets the attempt's own request kwargs. Each attempt receives a fresh kwargs dict, from the `**kwargs` unpacking at the hop boundary `litellm/router_utils/fallback_event_handlers.py:894` and the `input_kwargs` copy at `litellm/router.py:8552-8557`, so the rewrite does not reach the next attempt. A probe recorded the `id()` of the dict each attempt received and confirmed two distinct dicts across a two-hop chain, with the second attempt entering with no marker. That is what makes the per-hop re-evaluation work: each attempt decides against its own selected target
 
 ### The matching helper
 

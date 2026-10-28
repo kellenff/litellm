@@ -105,7 +105,19 @@ A second probe, with a rewrite that strips the bearer and a two-hop chain, produ
 
 The `None` here is because that probe's request carried no scoped header. The first probe above, which did carry one, showed `psh_at_entry_is_original=True`. Both agree that each attempt starts from the request's own value
 
-The mechanism is that the fallback chain copies the request kwargs at `litellm/router_utils/fallback_event_handlers.py:8552-8557`, and each attempt's rewrite lands on that attempt's own dict
+The mechanism is that each attempt receives its own kwargs dict. A probe that recorded the `id()` of the kwargs dict handed to `_update_kwargs_with_deployment` on each attempt, and wrote a marker into it, confirmed the second attempt enters with no marker:
+
+```
+=== per-attempt kwargs dict identity ===
+  group=plan-group       kwargs_id=4689561600   marker_at_entry=None
+  group=upstream         kwargs_id=4689572096   marker_at_entry='plan-group'
+  group=ordinary-group   kwargs_id=4689847296   marker_at_entry=None
+  group=upstream         kwargs_id=4689839616   marker_at_entry='ordinary-group'
+
+distinct kwargs dicts across attempts: 2 of 2
+```
+
+The fresh dict comes from the `**kwargs` unpacking at the hop boundary, `litellm/router_utils/fallback_event_handlers.py:894` where the fallback walk calls back into `litellm_router.async_function_with_fallbacks(*args, **kwargs)`, and from the `input_kwargs` copy the router builds for a fallback hop at `litellm/router.py:8552-8557`. Each attempt's rewrite therefore lands on that attempt's own dict, and the next attempt starts from the request's own value
 
 **Alternatives considered**:
 

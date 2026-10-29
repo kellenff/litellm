@@ -18,7 +18,7 @@ The first story needs no code. An operator composes the same one-name arrangemen
 
 **Primary Dependencies**: pydantic 2.x, httpx, fastapi (proxy), openai SDK. No new dependency is introduced
 
-**Storage**: N/A for the routing decision. The credential attribution reuses the existing spend-log `metadata` JSON, which carries `used_client_oauth_token` today at `litellm/proxy/_types.py:3770`. No migration
+**Storage**: N/A for the routing decision. The credential attribution rides the existing spend-log `metadata` JSON, which carries `used_client_oauth_token` today at `litellm/proxy/_types.py:3770`. The new `used_client_subscription_credential` flag is a key in that JSON, so no migration
 
 **Testing**: pytest, pytest-asyncio, respx for HTTP mocking
 
@@ -36,6 +36,8 @@ The first story needs no code. An operator composes the same one-name arrangemen
 
 The project constitution at `.specify/memory/constitution.md` is an unfilled template, with every principle still a placeholder. There is no ratified principle to check against, which the assessment also recorded. The binding gates are therefore the repository's `AGENTS.md`, and this plan is checked against those
 
+The constitution is a project-level gap rather than this feature's gap. Filling it is separate work that touches every feature, and it is not this feature's to decide
+
 | Gate | Requirement | How this plan satisfies it |
 |------|-------------|---------------------------|
 | Composition over inheritance | Prefer composition | The scope is a plain value on the router, matched by a shared helper function. No new class hierarchy, no base class, no mixin |
@@ -52,7 +54,17 @@ The project constitution at `.specify/memory/constitution.md` is an unfilled tem
 
 **Complexity Tracking**: no violations. The design adds one setting, one shared helper, one enforcement point, and one metadata stamp. No new project, no new repository pattern, no new credential field
 
-**Post-design re-check**: re-evaluated after Phase 1, and the gate still passes. The design did not grow a second enforcement point when the alias and fallback-key findings came back, it sharpened the one enforcement point's match key. The wildcard primitives moved rather than being duplicated, so the "standard over hand-rolled" row still holds. The test plan grew two cases, one for an alias scope entry and one for a direct group entry, because the probes showed both spellings must reach the same decision. No row needs to be revisited
+**Post-design re-check**: re-evaluated after the cross-artifact analysis, and the gate still passes, with two rows now resting on different ground than they did before.
+
+The "standard over hand-rolled" row still holds. The wildcard primitives moved rather than being duplicated, and the move now carries the third function the moved pair calls, so the provider-namespace guard travels with them
+
+The "no monster files, no god objects" row needed the new source module added to the Project Structure, because the plan created one and the structure did not list it. The new module is a pure function of the provider, the deployment's model group, the declared scope, and the router's alias map, so it adds a file and no state
+
+The "no new failure class" row is unaffected. The attribution flag is a boolean written onto request metadata, and the router's gate never raises on a request path
+
+Two rows changed because the analysis found a real defect in the design, not a wording problem. The credential attribution cannot reuse `used_client_oauth_token`, because that flag's provider gate is Anthropic-only and collapses both values to false for chatgpt. The attribution gets its own flag instead, and the existing flag keeps its current meaning and its pinned Bedrock and Vertex behavior. The end-to-end scenario moves from `tests/e2e/router/` to `tests/integration/routing/`, because `tests/e2e/AGENTS.md:7` sends scripted-upstream scenarios to the integration suite, and the rig the scenario needs already exists there
+
+The test plan grew accordingly: the shared-helper cases now cover the relocated primitives and the namespace guard they carry, the end-to-end case moved suites, and the attribution cases name the flag rather than the flag's writer
 
 ## Project Structure
 
@@ -76,20 +88,24 @@ specs/001-model-scoped-plan-forwarding/
 ```text
 litellm/
 ├── types/
-│   └── router.py                  # the scope setting's typed surface, next to ModelGroupSettings
+│   ├── router.py                  # the scope setting's typed surface, next to ModelGroupSettings
+│   └── utils.py                   # the attribution flag on StandardLoggingMetadata
 ├── router.py                      # the Router constructor argument and the enforcement point
+├── router_utils/
+│   ├── common_utils.py            # resolve_model_group_alias, already here
+│   └── forwarded_credential_scope.py  # the scope decision, a pure function
 ├── litellm_core_utils/
-│   └── get_provider_specific_headers.py   # the shared provider-scoped header helpers
+│   └── get_provider_specific_headers.py   # the relocated wildcard primitives
 └── proxy/
     ├── auth/
-    │   └── auth_checks.py         # delegates model matching to the shared helper
+    │   └── auth_checks.py         # delegates model matching to the relocated primitives
     ├── litellm_pre_call_utils.py  # the proxy-side stamp, unchanged in behavior
     └── spend_tracking/
         └── spend_tracking_utils.py # reads the attribution, unchanged in behavior
 
 tests/unit/
 ├── litellm_core_utils/
-│   └── test_get_provider_specific_headers.py   # the shared helper's unit tests
+│   └── test_provider_specific_headers.py   # the relocated primitives' unit tests, the existing file
 ├── router_utils/
 │   └── test_forwarded_credential_scope.py     # the scope decision's unit tests
 └── test_router/
@@ -139,7 +155,9 @@ The scope matches against the selected deployment's model group, `deployment["mo
 
 Two matching behaviors are needed. An entry that is a router model-group alias resolves to its target group first, using the router's own alias map at `litellm/router.py:12024-12030` and `litellm/router_utils/common_utils.py:96-114`. An entry that is a wildcard matches under the proxy's existing wildcard rule at `litellm/proxy/auth/auth_checks.py:7753` and `:7772`, `is_model_allowed_by_pattern` and `model_matches_any_wildcard_pattern_in_list`
 
-Those wildcard primitives live under `litellm/proxy/auth/`, and the router core does not depend on the proxy layer. The primitives therefore move to the shared core location `litellm/litellm_core_utils/get_provider_specific_headers.py`, which already holds the provider-scoped header helpers, and the proxy's `auth_checks.py` delegates to them. One implementation, two callers
+Those wildcard primitives live under `litellm/proxy/auth/`, and the router core does not depend on the proxy layer. The primitives therefore move to the shared core location `litellm/litellm_core_utils/get_provider_specific_headers.py`, and the proxy's `auth_checks.py` delegates to them. One implementation, two callers
+
+The move carries three functions, not two. `model_matches_any_wildcard_pattern_in_list` at `litellm/proxy/auth/auth_checks.py:7772` calls `_is_wildcard_pattern` at `:7831` and `_model_custom_llm_provider_matches_wildcard_pattern` at `:7801`, and the second one carries the provider-namespace guard in its docstring: a model whose provider was inferred from a fragment of the full string, such as `bedrockz/anthropic.claude-3-5-sonnet-20240620`, is never granted by a `bedrock/*` key. All three move together, unchanged
 
 ### The names in an operator's configuration are not interchangeable
 
@@ -162,7 +180,13 @@ The scope is a router setting, reaching `Router.__init__` through the existing p
 
 ### The credential attribution
 
-The router records which credential served the request onto the request metadata, reusing the existing `used_client_oauth_token` flag. The full contract is in [contracts/credential-attribution.md](./contracts/credential-attribution.md)
+The router records which credential served the request onto the request metadata, in a new boolean flag, `used_client_subscription_credential`. The full contract is in [contracts/credential-attribution.md](./contracts/credential-attribution.md)
+
+The existing `used_client_oauth_token` flag cannot carry this, and the reason is a provider gate rather than a missing field. `resolve_used_client_oauth_token` at `litellm/llms/anthropic/common_utils.py:336` returns `client_sent_oauth_token and custom_llm_provider in ANTHROPIC_OAUTH_FORWARD_PROVIDERS`, and that set at `:333` is `frozenset((LlmProviders.ANTHROPIC.value,))`. A probe confirmed both values collapse to `False` for chatgpt, so the distinction the operator needs cannot survive that path unchanged
+
+Widening the constant is not available either, because the same constant scopes the Anthropic OAuth credential headers at `litellm/proxy/litellm_pre_call_utils.py:4341`, and widening it would break the pinned case at `tests/unit/proxy/spend_tracking/test_spend_tracking_utils.py:4116` where a request the router sent to Bedrock or Vertex must not read true. The existing flag therefore keeps its current meaning and behavior, and the new flag carries the subscription attribution
+
+The router's value reaches the spend log through the request metadata, with no new column. `litellm/main.py:5535` reads `metadata = kwargs.get("metadata", None)`, `litellm/main.py:5956` passes that same object into `get_litellm_params`, and `litellm/litellm_core_utils/get_litellm_params.py:237` stores it as `litellm_params["metadata"]` without copying it. A probe confirmed the identity directly
 
 ### The story that needs no code
 
@@ -192,14 +216,17 @@ Tests follow the repository conventions in `tests/AGENTS.md` and `tests/unit/AGE
 - A request that falls back from an out-of-scope target to an in-scope one **does** forward the bearer on the fallback attempt. Mutation caught: a strip that is permanent for the request rather than per attempt
 - A request that names a model-group alias is scoped against the deployment's group, so the alias and the group reach the same decision. Mutation caught: a matcher that keys on the requested name
 - The attempt that served the request is the one whose credential attribution is recorded. Mutation caught: an attribution stamped on the first attempt
+- The attribution survives onto the spend-log metadata. Mutation caught: a write into the bucket the reader does not consult
+- The existing `used_client_oauth_token` flag keeps its Anthropic-only behavior, so a request the router sent to a provider that does not accept a forwarded Anthropic bearer still reads false. Mutation caught: a change that widens `ANTHROPIC_OAUTH_FORWARD_PROVIDERS` to make the new flag work
 
-**The shared helper, in `tests/unit/litellm_core_utils/test_get_provider_specific_headers.py`**
+**The relocated primitives, in `tests/unit/litellm_core_utils/test_provider_specific_headers.py`**
 
-- The provider-scoped header helpers keep their current behavior for a provider that accepts a forwarded credential. Mutation caught: a refactor of the shared module that changes the existing precedence
+- The relocated wildcard primitives keep their current behavior. Mutation caught: a move that changes which patterns match
+- The provider-namespace guard still refuses a model whose provider was inferred from a fragment, such as `bedrockz/anthropic.claude-3-5-sonnet-20240620` under a `bedrock/*` key. Mutation caught: a move that drops the guard
 
 **Mutation testing**: run the repository's mutation harness over the changed lines and confirm a kill rate above 90 percent. The tests above are written so that each one fails when its named behavior is broken
 
-**End-to-end**: the e2e suite proves the feature against a live proxy with a scripted upstream, per `tests/e2e/AGENTS.md`. The scenario is one client-facing name over a plan-covered group and an ordinary group, a request that resolves to each, and an assertion on which credential reached the upstream. The e2e suite has no unit tests of a product feature and no mock upstream of our own code, so this scenario belongs in `tests/e2e/router/` alongside the other routing-behavior suites, and it drives the proxy through the shared transport
+**End-to-end**: the scenario lives in `tests/integration/routing/`, not in `tests/e2e/`. `tests/e2e/AGENTS.md:7` states the rule directly: "Only what a real provider proves. If it holds against our scripted upstream: `tests/integration`". This scenario asserts on which credential reached the upstream, which needs a scripted upstream that records the request it received, so the integration suite is the right home. The rig already exists: `tests/integration/_support/codex_vendor.py` is a ChatGPT Codex backend whose `forwarded()` asserts the outbound `Authorization` header at `:89`, and `tests/integration/_support/wire.py` records every received request at `:140` and exposes them through `drain()` at `:78`. The scenario is one client-facing name over a plan-covered group and an ordinary group, a request that resolves to each, and an assertion on the credential that reached the upstream
 
 ## Proof of fix
 
@@ -222,5 +249,8 @@ The commands and the expected upstream observations are written out in [quicksta
 | The scope narrows a provider the operator did not mean to narrow | The scope is keyed by provider. A provider absent from the mapping keeps today's forwarding, and a test asserts one provider's scope does not affect another's |
 | An existing operator's Anthropic forwarding changes | Only providers with a declared scope are narrowed, and the Anthropic subscription provider is out of scope for this feature |
 | The credential attribution leaks a secret into a log | The flag is a boolean. No credential value is recorded |
+| The attribution reuses `used_client_oauth_token`, whose provider gate collapses chatgpt to false and loses the distinction the operator needs | The attribution gets its own flag, `used_client_subscription_credential`. The existing flag keeps its Anthropic-only meaning and its pinned Bedrock and Vertex behavior, and the existing test at `tests/unit/proxy/spend_tracking/test_spend_tracking_utils.py:4116` guards it |
+| The router writes the attribution into the bucket the spend-log reader does not consult, and the operator sees nothing | The router writes to both metadata bucket names, the same way `litellm/router_utils/fallback_event_handlers.py:302` does with `_ROUTER_METADATA_BUCKETS`. A test asserts the flag survives onto the spend-log metadata |
 | The operator keys the fallback on the model group instead of the client-facing name, and the fallback silently never fires | The fallback lookup key is the requested name, which the probe confirmed. The operator guide and the quickstart name the two keys separately and say why they differ, and the e2e scenario asserts the fallback attempt actually reaches the second target |
 | The operator scopes by the alias and the match is made against the group, so the scope never matches | The matcher resolves an alias entry to its target group before comparing, and the group is the match key. The unit tests cover both an alias entry and a direct group entry |
+| The end-to-end scenario lands in the wrong suite and is never run | `tests/e2e/AGENTS.md:7` sends scripted-upstream scenarios to `tests/integration`. The scenario goes in `tests/integration/routing/`, where the `providers` group in `tests/integration/run.py:20` already selects `routing`, and where the ChatGPT Codex rig at `tests/integration/_support/codex_vendor.py` already asserts the outbound credential |

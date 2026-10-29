@@ -93,10 +93,10 @@ curl -sS http://localhost:4000/v1/responses \
 **Expected in the proxy log**: the request's record names the forwarded credential
 
 ```bash
-grep -o '"used_client_oauth_token":[a-z]*' litellm.log | tail -1
+grep -o '"used_client_subscription_credential":[a-z]*' litellm.log | tail -1
 ```
 
-**Expected**: `"used_client_oauth_token":true`
+**Expected**: `"used_client_subscription_credential":true`
 
 ## Step 2: an out-of-scope target receives no part of the caller's bearer
 
@@ -119,10 +119,10 @@ curl -sS http://localhost:4000/v1/responses \
 **Expected in the proxy log**:
 
 ```bash
-grep -o '"used_client_oauth_token":[a-z]*' litellm.log | tail -1
+grep -o '"used_client_subscription_credential":[a-z]*' litellm.log | tail -1
 ```
 
-**Expected**: `"used_client_oauth_token":false`
+**Expected**: `"used_client_subscription_credential":false`
 
 If the bearer had leaked, the upstream would have authenticated as the caller's subscription instead, and the flag would read `true`
 
@@ -148,7 +148,7 @@ curl -sS http://localhost:4000/v1/responses \
 
 **Expected**: the in-scope attempt is rejected upstream with a 400, the existing fallback path carries the request to the ordinary group, and the ordinary group serves it under its own credential. The caller sees a normal completion
 
-**Expected in the proxy log**: the request's record reads `"used_client_oauth_token":false`, because the attempt that served the request was the fallback attempt and it used the ordinary group's own credential
+**Expected in the proxy log**: the request's record reads `"used_client_subscription_credential":false`, because the attempt that served the request was the fallback attempt and it used the ordinary group's own credential
 
 This is the case the whole feature exists for. A scope decision made once per request would have handed the ordinary group the caller's bearer, and the flag would have read `true`
 
@@ -168,7 +168,7 @@ router_settings:
 
 **Expected**: the first attempt on `ordinary` fails, the fallback lands on `codex-plan`, and because `codex-plan` is now in scope the caller's bearer **is** forwarded on that attempt
 
-**Expected in the proxy log**: `"used_client_oauth_token":true`
+**Expected in the proxy log**: `"used_client_subscription_credential":true`
 
 This proves the rewrite is per attempt rather than permanent for the request. A strip that stuck for the whole request would read `false` here and the fallback would have had no credential to use
 
@@ -198,8 +198,8 @@ pytest tests/unit/router_utils/test_forwarded_credential_scope.py -v
 # The enforcement point's unit tests
 pytest tests/unit/test_router/test_forwarded_credential_scope.py -v
 
-# The shared helper's unit tests
-pytest tests/unit/litellm_core_utils/test_get_provider_specific_headers.py -v
+# The relocated wildcard primitives' unit tests
+pytest tests/unit/litellm_core_utils/test_provider_specific_headers.py -v
 
 # The lint and type gates
 make check

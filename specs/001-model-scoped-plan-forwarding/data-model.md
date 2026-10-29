@@ -91,11 +91,13 @@ The per-request record naming which credential served the request and marking th
 
 | Field | Type | Meaning |
 |-------|------|---------|
-| `used_client_oauth_token` | `bool` | The caller's forwarded ChatGPT credential served the request |
-| `plan_covered` | `bool` | The request was served under a plan-covered target. True when `used_client_oauth_token` is true |
+| `used_client_subscription_credential` | `bool` | The caller's forwarded ChatGPT credential served the request |
+| `plan_covered` | `bool` | The request was served under a plan-covered target. True when `used_client_subscription_credential` is true |
 
 **Relationships**
 
 - Travels on the request metadata, so it reaches both the spend log and the request log
-- Reuses the existing `used_client_oauth_token` flag, typed at `litellm/types/utils.py:3374` and stored on spend logs at `litellm/proxy/_types.py:3770`
-- The proxy's existing pre-routing stamp at `litellm/proxy/litellm_pre_call_utils.py:2658` is the fallback for requests the router did not route
+- Is a new field, typed at `litellm/types/utils.py` next to the existing `used_client_oauth_token` and stored on spend logs at `litellm/proxy/_types.py` next to that flag's spend-log field
+- Does not reuse `used_client_oauth_token`, whose provider gate is Anthropic-only and collapses both values to false for chatgpt
+- Is written by the router on every routing attempt, into both metadata bucket names, so the value on the request belongs to the attempt that served it
+- Is absent on a request the router never served, because no routing decision was made about its credential

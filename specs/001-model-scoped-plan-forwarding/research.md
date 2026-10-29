@@ -201,11 +201,11 @@ The alternative, a `litellm_settings.model_group_settings` field, would work for
 - A `litellm_settings.model_group_settings` field, mirroring `forward_client_headers_to_llm_api`. Rejected, because it is a proxy-global with no router-level equivalent, so the same feature would work in the proxy and not in a bare router
 - A per-deployment `litellm_params` flag. Rejected, for the reasons in Decision 1
 
-## Decision 7: the credential attribution in the log reuses the existing `used_client_oauth_token` flag
+## Decision 7: the credential attribution in the log needs its own field, not the existing `used_client_oauth_token` flag
 
-**Decision**: The router records which credential served the request, and the proxy stamps it onto the request metadata so it lands in the spend log and the request log
+**Decision**: The router records which credential served the request in a new boolean field, `used_client_subscription_credential`, and writes it onto the request metadata so it lands in the spend log and the request log
 
-**Rationale**: The proxy already stamps this flag. At `litellm/proxy/litellm_pre_call_utils.py:2658`:
+**Rationale**: The obvious candidate was the existing `used_client_oauth_token` flag, which the proxy already stamps. At `litellm/proxy/litellm_pre_call_utils.py:2658`:
 
 ```python
 data[_metadata_variable_name]["used_client_oauth_token"] = add_provider_specific_headers_to_request(
@@ -215,11 +215,13 @@ data[_metadata_variable_name]["used_client_oauth_token"] = add_provider_specific
 
 `add_provider_specific_headers_to_request` returns whether a client OAuth token was found, and the flag is carried through to the spend log at `litellm/proxy/spend_tracking/spend_tracking_utils.py:814-816` via `resolve_used_client_oauth_token`. The flag is typed at `litellm/types/utils.py:3374` and stored on spend logs at `litellm/proxy/_types.py:3770`
 
-That flag is currently proxy-stamped, from the inbound request, before routing. It answers "did the caller send a subscription credential", not "which credential served this request". The router's decision is the per-hop answer, so the router writes the per-hop value and the proxy's stamp becomes the fallback for requests the router did not route
+That flag cannot carry this feature's fact. It answers "was the client's Anthropic OAuth bearer forwarded to an Anthropic deployment", and the provider gate that enforces it is Anthropic-only. Decision 13 works through why, and the conclusion is that a new field is needed
+
+The proxy's pre-routing stamp also answers a different question than the operator is asking. It says "did the caller send a subscription credential", not "which credential served this request". The router's decision is the per-hop answer, so the router writes the per-hop value
 
 **Alternatives considered**:
 
-- A new dedicated metadata field. Rejected, because an existing field already means "a client subscription credential served this request" and two fields for one fact is worse
+- A new dedicated metadata field. Accepted, for the reason in Decision 13. The earlier reasoning that "two fields for one fact is worse" does not hold here, because the two fields carry two different facts: the existing one stays Anthropic-specific, and the new one carries the subscription attribution
 - Recording the credential class only in the router's own logs. Rejected, because the operator needs it on the request record, which is where the spend log and the request log both read from
 
 ## Decision 8: the ChatGPT provider's own credential precedence is left alone
@@ -280,6 +282,57 @@ The provider's own precedence already does the right thing. At `litellm/llms/cha
 
 - Give the plan-covered target a `chatgpt_auth_file` holding the proxy's own stored login. Rejected for the proof, because a stripped bearer would then silently authenticate as the proxy's login, which is the opposite of what the operator wants to see
 - Give the plan-covered target an `api_key`. Rejected for the same reason, and it would also make the ChatGPT upstream reject the request with `api_key_not_supported`, which muddies the signal
+
+## Decision 13: the credential attribution needs its own provider-scoped gate, because the existing one is Anthropic-only
+
+**Decision**: The attribution is carried by a new provider-scoped flag rather than by widening the existing `used_client_oauth_token` resolver, and the flag is a boolean
+
+**Rationale**: The existing flag looks like it fits, but it does not. `resolve_used_client_oauth_token` at `litellm/llms/anthropic/common_utils.py:336` reads
+
+```python
+def resolve_used_client_oauth_token(client_sent_oauth_token: object, custom_llm_provider: str | None) -> bool | None:
+    if not isinstance(client_sent_oauth_token, bool):
+        return None
+    return client_sent_oauth_token and custom_llm_provider in ANTHROPIC_OAUTH_FORWARD_PROVIDERS
+```
+
+and `ANTHROPIC_OAUTH_FORWARD_PROVIDERS` at `litellm/llms/anthropic/common_utils.py:333` is `frozenset((LlmProviders.ANTHROPIC.value,))`. The gate is not a formality. It encodes "the client's Anthropic OAuth bearer is only forwarded to an Anthropic deployment", which the existing test at `tests/unit/proxy/spend_tracking/test_spend_tracking_utils.py:4116` pins: a request the router sent to Bedrock or Vertex paid with the configured key and must not read true
+
+A probe confirmed the consequence for chatgpt:
+
+```
+ANTHROPIC_OAUTH_FORWARD_PROVIDERS = ['anthropic']
+
+  stamped=True  provider=anthropic  -> True
+  stamped=False provider=anthropic  -> False
+  stamped=True  provider=chatgpt    -> False
+  stamped=False provider=chatgpt    -> False
+```
+
+Both values collapse to `False` for chatgpt, so the distinction the operator needs cannot survive that path unchanged. Widening `ANTHROPIC_OAUTH_FORWARD_PROVIDERS` to include chatgpt would fix the collapse and break the Bedrock and Vertex cases at the same time, because that constant also decides which providers the Anthropic OAuth credential headers are scoped to at `litellm/proxy/litellm_pre_call_utils.py:4341`. One constant cannot mean "accepts a forwarded Anthropic bearer" and "accepts a forwarded subscription bearer" at once
+
+The attribution therefore gets its own field, with its own provider gate, and the existing flag keeps its existing meaning. Two facts need two fields, which is the opposite of the contract's earlier claim that one field should carry both. The earlier claim was wrong because it assumed the existing field could express "a client subscription credential served this request" for any provider, and it cannot
+
+**Alternatives considered**:
+
+- Widen `ANTHROPIC_OAUTH_FORWARD_PROVIDERS` to `{"anthropic", "chatgpt"}`. Rejected, because the same constant scopes the Anthropic OAuth credential headers at `litellm/proxy/litellm_pre_call_utils.py:4341`, so widening it would forward Anthropic OAuth headers to chatgpt deployments and break the pinned Bedrock and Vertex cases
+- Change `resolve_used_client_oauth_token` to accept a provider set parameter. Rejected, because the function's own name and its single caller-visible contract are Anthropic-specific, and threading a second provider set through it would leave the Anthropic path and the subscription path sharing one flag with two meanings
+- Write a string field naming the credential class. Rejected, because the operator needs a boolean distinction between "the caller's bearer served it" and "the target's own credential served it", and a free-form string is not filterable the way a boolean is
+
+## Decision 14: the router's per-attempt value reaches the spend log through the request metadata
+
+**Decision**: The router writes its per-attempt answer onto the request metadata, and the spend log reads it from there
+
+**Rationale**: The object chain holds, and a probe confirmed the identity at each step. `litellm/main.py:5535` reads `metadata = kwargs.get("metadata", None)`, and `litellm/main.py:5956` passes that same object into `get_litellm_params`, which at `litellm/litellm_core_utils/get_litellm_params.py:237` stores it as `litellm_params["metadata"]` without copying it. A probe confirmed the identity directly:
+
+```
+=== identity ===
+  litellm_params['metadata'] is the metadata object: True
+```
+
+The spend log reads that bucket through `proxy_stamped_used_client_oauth_token` at `litellm/litellm_core_utils/core_helpers.py:416`, which prefers `litellm_params["litellm_metadata"]` and falls back to `litellm_params["metadata"]`. So the router's value lands in the bucket the reader consults, with no new column and no new field on the spend-log row
+
+One wrinkle the probe surfaced: the router writes into the bucket named by `get_router_metadata_variable_name`, which is `metadata` for chat completions and `litellm_metadata` for batch and generic calls, while the reader prefers `litellm_metadata`. The router therefore writes to both bucket names, which is what `litellm/router_utils/fallback_event_handlers.py:302` already does for its own metadata writes with `_ROUTER_METADATA_BUCKETS`
 
 ## Open items carried into implementation
 

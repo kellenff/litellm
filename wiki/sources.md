@@ -53,3 +53,4 @@ Sources are immutable inputs: the wiki never edits them.
 | S068 | `specs/002-add-git-hooks-precommit/contracts/pre-commit-config.md` | file | 2026-09-27 | 2026-09-27 | pre-commit-framework-rule-set.md, ci-hook-parity-gate.md |
 | S069 | `specs/001-model-scoped-plan-forwarding/research.md` | file | 2026-10-28 | 2026-10-28 | forwarded-client-credentials.md, model-scoped-credential-forwarding.md, model-scope-and-fallback-naming.md, spend-logging.md |
 | S070 | `specs/001-model-scoped-plan-forwarding/plan.md` | file | 2026-10-28 | 2026-10-28 | forwarded-client-credentials.md, model-scoped-credential-forwarding.md, model-scope-and-fallback-naming.md |
+| S071 | `specs/001-model-scoped-plan-forwarding/contracts/credential-attribution.md` | file | 2026-10-28 | 2026-10-28 | spend-logging.md |

@@ -68,6 +68,7 @@ These are conditional triggers, not backlog entries:
 
 Newest first; one row per ingest run (each run may touch several pages).
 
+- [2026-10-28] S071 → credential-attribution.md, model-scoped-credential-forwarding.md, spend-logging.md (the corrected attribution: a new `used_client_subscription_credential` flag, because the existing `used_client_oauth_token` resolver is gated on the Anthropic provider and collapses both values to false for chatgpt)
 - [2026-10-28] S069-S070 → forwarded-client-credentials.md, model-scoped-credential-forwarding.md, model-scope-and-fallback-naming.md, spend-logging.md (model-scoped token-plan forwarding: the two routes a forwarded bearer takes, the per-attempt rewrite, the provider-keyed scope, the model-group match key, and the fallback key)
 - [2026-09-26] S042-S045 → proxy-server.md, proxy-dev-config.md (proxy boot order, dev_config.yaml, example_config_yaml tour)
 - [2026-09-26] S060-S064 → test-conventions.md, pr-and-issues.md (test mirroring, PR/issue templates, human-facing writing rules)
